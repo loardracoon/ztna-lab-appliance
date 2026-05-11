@@ -1,0 +1,34 @@
+# Build artifacts
+dist/
+*.exe
+ztna-lab
+!deployments/linux/ztna-lab.service
+
+# Runtime state
+*.log
+*.history
+dns_records.json
+ssh_host_key
+
+# Go
+*.test
+*.out
+vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker volumes (caso alguém faça bind mount local)
+data/
+
+# Configuração local (caso copiem o .example pra .env local)
+.env
+deployments/linux/config.env

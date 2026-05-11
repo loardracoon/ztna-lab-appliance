@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<title>ZTNA Lab — Admin</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.5 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+         background: #0d1117; color: #c9d1d9; padding: 24px; max-width: 1100px; margin: 0 auto; }
+  h1 { font-size: 18px; margin: 0 0 4px; color: #f0f6fc; letter-spacing: 0.5px; }
+  .sub { color: #8b949e; font-size: 12px; margin-bottom: 24px; }
+  .grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+  .card { background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 16px; }
+  .card h2 { font-size: 13px; margin: 0 0 12px; text-transform: uppercase; letter-spacing: 1px; color: #58a6ff; }
+  .row { display: flex; justify-content: space-between; align-items: center; padding: 6px 0;
+         border-bottom: 1px solid #21262d; }
+  .row:last-child { border-bottom: none; }
+  .pill { font-size: 11px; padding: 2px 8px; border-radius: 10px; font-weight: 600; }
+  .pill.up { background: #1f6f3f; color: #aff5b4; }
+  .pill.down { background: #6f1f1f; color: #ffb4b4; }
+  button { background: #21262d; color: #c9d1d9; border: 1px solid #30363d; padding: 4px 10px;
+           font: inherit; font-size: 12px; border-radius: 4px; cursor: pointer; margin-left: 4px; }
+  button:hover { background: #30363d; }
+  button.primary { background: #238636; border-color: #2ea043; color: white; }
+  button.primary:hover { background: #2ea043; }
+  button.danger { background: #6f1f1f; border-color: #8a2929; color: white; }
+  input, select { background: #0d1117; color: #c9d1d9; border: 1px solid #30363d;
+                  padding: 6px 8px; font: inherit; border-radius: 4px; }
+  input { width: 100%; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th { text-align: left; padding: 6px 4px; color: #8b949e; font-weight: 600;
+       text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid #30363d; }
+  td { padding: 6px 4px; border-bottom: 1px solid #21262d; }
+  .form-row { display: grid; grid-template-columns: 100px 1fr 1fr auto; gap: 6px; margin-top: 8px; }
+  .log { background: #010409; padding: 12px; border-radius: 4px; font-size: 11px;
+         max-height: 280px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; }
+  .log .DNS { color: #79c0ff; }
+  .log .HTTP { color: #7ee787; }
+  .log .SSH { color: #d2a8ff; }
+  .log .SYS { color: #e3b341; }
+  .log .ADM { color: #ff7b72; }
+</style>
+</head>
+<body>
+<h1>ZTNA Lab — Painel de Administração</h1>
+<div class="sub">Plano de gerenciamento. Plano de teste exposto na porta 80.</div>
+
+<div class="grid">
+
+  <div class="card">
+    <h2>Status dos serviços</h2>
+    <div id="status">carregando...</div>
+  </div>
+
+  <div class="card">
+    <h2>Registros DNS</h2>
+    <table id="dns-table"><thead><tr><th>Tipo</th><th>Nome</th><th>Valor</th><th></th></tr></thead><tbody></tbody></table>
+    <div class="form-row">
+      <select id="dns-type"><option>A</option><option>CNAME</option></select>
+      <input id="dns-name" placeholder="nome">
+      <input id="dns-value" placeholder="ip ou alvo">
+      <button class="primary" onclick="addDNS()">+</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Sessões SSH ativas</h2>
+    <table id="ssh-table"><thead><tr><th>ID</th><th>Usuário</th><th>IP</th><th>Conectado</th></tr></thead><tbody></tbody></table>
+  </div>
+
+  <div class="card" style="grid-column: 1/-1;">
+    <h2>Log <button onclick="loadLog()" style="float:right">refresh</button></h2>
+    <div class="log" id="log">carregando...</div>
+  </div>
+
+</div>
+
+<script>
+const TOKEN = localStorage.getItem('ztna_token') || '';
+const H = TOKEN ? { 'Authorization': 'Bearer ' + TOKEN } : {};
+
+async function api(path, opts = {}) {
+  opts.headers = { ...(opts.headers || {}), ...H };
+  if (opts.body) opts.headers['Content-Type'] = 'application/json';
+  const r = await fetch(path, opts);
+  if (!r.ok) throw new Error((await r.json()).error || r.statusText);
+  return r.json();
+}
+
+async function loadStatus() {
+  const s = await api('/api/status');
+  const svc = (name, info) => `
+    <div class="row">
+      <span><b>${name}</b> <span style="color:#8b949e">:${info.port}</span></span>
+      <span>
+        <span class="pill ${info.running ? 'up' : 'down'}">${info.running ? 'UP' : 'DOWN'}</span>
+        <button onclick="toggle('${name.toLowerCase()}', ${info.running})">${info.running ? 'stop' : 'start'}</button>
+      </span>
+    </div>`;
+  document.getElementById('status').innerHTML = svc('DNS', s.dns) + svc('HTTP', s.http) + svc('SSH', s.ssh);
+}
+
+async function toggle(svc, isRunning) {
+  await api(`/api/${svc}/${isRunning ? 'stop' : 'start'}`, { method: 'POST' });
+  loadStatus();
+}
+
+async function loadDNS() {
+  const r = await api('/api/dns/records');
+  const rows = [];
+  for (const [n, v] of Object.entries(r.a || {})) rows.push(['A', n, v]);
+  for (const [n, v] of Object.entries(r.cname || {})) rows.push(['CNAME', n, v]);
+  document.querySelector('#dns-table tbody').innerHTML = rows
+    .sort((a,b) => a[1].localeCompare(b[1]))
+    .map(([t,n,v]) => `<tr><td><span class="pill ${t==='A'?'up':'down'}">${t}</span></td>
+      <td>${n}</td><td>${v}</td><td><button class="danger" onclick="delDNS('${n}')">×</button></td></tr>`)
+    .join('') || '<tr><td colspan="4" style="color:#8b949e">nenhum registro</td></tr>';
+}
+
+async function addDNS() {
+  const type = document.getElementById('dns-type').value;
+  const name = document.getElementById('dns-name').value.trim();
+  const value = document.getElementById('dns-value').value.trim();
+  if (!name || !value) return;
+  try {
+    await api('/api/dns/records', { method: 'POST', body: JSON.stringify({ type, name, value }) });
+    document.getElementById('dns-name').value = '';
+    document.getElementById('dns-value').value = '';
+    loadDNS();
+  } catch (e) { alert(e.message); }
+}
+
+async function delDNS(name) {
+  if (!confirm('Remover ' + name + '?')) return;
+  await api('/api/dns/records/' + encodeURIComponent(name), { method: 'DELETE' });
+  loadDNS();
+}
+
+async function loadSSH() {
+  const sessions = await api('/api/ssh/sessions');
+  document.querySelector('#ssh-table tbody').innerHTML = (sessions || [])
+    .map(s => `<tr><td>${s.id}</td><td>${s.user}</td><td>${s.ip}</td><td>${s.connected_at || ''}</td></tr>`)
+    .join('') || '<tr><td colspan="4" style="color:#8b949e">nenhuma sessão</td></tr>';
+}
+
+async function loadLog() {
+  const r = await api('/api/log/tail?n=80');
+  const html = (r.lines || []).map(line => {
+    const m = line.match(/\[(\w+)\s*\]/);
+    const cls = m ? m[1].trim() : '';
+    return `<span class="${cls}">${line}</span>`;
+  }).join('\n');
+  document.getElementById('log').innerHTML = html || '<span style="color:#8b949e">sem entradas</span>';
+}
+
+async function refresh() {
+  try { await Promise.all([loadStatus(), loadDNS(), loadSSH(), loadLog()]); }
+  catch (e) {
+    if (e.message === 'unauthorized') {
+      const t = prompt('Token de admin:');
+      if (t) { localStorage.setItem('ztna_token', t); location.reload(); }
+    }
+  }
+}
+
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>

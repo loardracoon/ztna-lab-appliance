@@ -1,0 +1,49 @@
+[Unit]
+Description=ZTNA Lab Appliance — Data-plane validation toolkit
+Documentation=https://github.com/your-org/ztna-lab-appliance
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ztna-lab
+Group=ztna-lab
+
+# Capability para bindar portas <1024 (53, 80) sem rodar como root
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+
+# Diretórios gerenciados pelo systemd:
+# /var/lib/ztna-lab  (StateDirectory)  → dns_records.json, ssh_host_key
+# /var/log/ztna-lab  (LogsDirectory)   → ztna_lab.log
+StateDirectory=ztna-lab
+LogsDirectory=ztna-lab
+ConfigurationDirectory=ztna-lab
+
+# Configuração via /etc/ztna-lab/config.env
+EnvironmentFile=-/etc/ztna-lab/config.env
+
+ExecStart=/usr/local/bin/ztna-lab daemon
+
+# Restart automático em falha
+Restart=on-failure
+RestartSec=5s
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+RestrictRealtime=true
+SystemCallArchitectures=native
+ReadWritePaths=/var/lib/ztna-lab /var/log/ztna-lab
+
+[Install]
+WantedBy=multi-user.target

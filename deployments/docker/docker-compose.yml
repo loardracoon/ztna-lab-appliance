@@ -1,0 +1,64 @@
+# docker-compose.yml
+#
+# Build context aponta para a raiz do repositório (../..) já que este arquivo
+# está em deployments/docker/.
+#
+# Profiles:
+#   * "host"   — network_mode: host (recomendado). UDP/53 e TCP/80 expostos
+#                diretamente na interface do host, sem NAT.
+#   * "bridge" — port mapping clássico. Funciona, mas o overhead do NAT do
+#                userland-proxy interfere nos testes de latência.
+#
+# Uso (a partir da raiz do repo, ou via Makefile):
+#   make docker-up                                             # usa profile host
+#   docker compose -f deployments/docker/docker-compose.yml --profile host up -d
+#   docker compose -f deployments/docker/docker-compose.yml --profile bridge up -d
+#
+# Idêntico com podman-compose / podman compose.
+
+services:
+
+  ztna-appliance-host:
+    profiles: ["host"]
+    image: ztna-lab-appliance:1.0
+    build:
+      context: ../..                              # raiz do repo
+      dockerfile: deployments/docker/Dockerfile
+    container_name: ztna-appliance
+    network_mode: host
+    restart: unless-stopped
+    cap_add:
+      - NET_BIND_SERVICE
+    environment:
+      ZTNA_ADMIN_ADDR: "0.0.0.0:9000"
+      # ZTNA_ADMIN_TOKEN: "troque-este-token"     # gere com: openssl rand -hex 32
+      ZTNA_AUTOSTART_DNS:  "true"
+      ZTNA_AUTOSTART_HTTP: "true"
+      ZTNA_AUTOSTART_SSH:  "true"
+    volumes:
+      - ztna-data:/data
+
+  ztna-appliance-bridge:
+    profiles: ["bridge"]
+    image: ztna-lab-appliance:1.0
+    build:
+      context: ../..
+      dockerfile: deployments/docker/Dockerfile
+    container_name: ztna-appliance
+    restart: unless-stopped
+    cap_add:
+      - NET_BIND_SERVICE
+    ports:
+      - "80:80/tcp"        # HTTP Inspector
+      - "2222:2222/tcp"    # SSH mock
+      - "53:53/udp"        # DNS local
+      - "9000:9000/tcp"    # Admin API + Web UI
+    environment:
+      ZTNA_ADMIN_ADDR: "0.0.0.0:9000"
+      # ZTNA_ADMIN_TOKEN: "troque-este-token"
+    volumes:
+      - ztna-data:/data
+
+volumes:
+  ztna-data:
+    driver: local
