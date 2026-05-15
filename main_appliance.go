@@ -132,14 +132,26 @@ func runDaemon() {
 	logger.Log("SYS ", "ZTNA Lab appliance stopped")
 }
 
-// runLatencyAPI é o adapter da função de latência existente no main para o
-// formato esperado pela Admin API. Implemente conforme o RunLatency real.
+// runLatencyAPI é o adapter da função runLatency (em main.go) para o formato
+// esperado pela Admin API.
 func runLatencyAPI(url string, count int, interval time.Duration) (admin.LatencyResult, error) {
-	// Stub — substitua pela chamada real à função de latência do main.go.
-	// Exemplo:
-	//   r := runLatency(url, count, interval) // função original
-	//   return admin.LatencyResult{ ... preencher campos ... }, nil
-	return admin.LatencyResult{}, fmt.Errorf("not implemented: integrar com runLatency() existente")
+	r, err := runLatency(url, count, interval)
+	if err != nil {
+		return admin.LatencyResult{}, err
+	}
+	return admin.LatencyResult{
+		URL:     r.URL,
+		Total:   r.Total,
+		Success: r.Success,
+		Min:     r.Min.Milliseconds(),
+		Avg:     r.Avg.Milliseconds(),
+		P50:     r.P50.Milliseconds(),
+		P95:     r.P95.Milliseconds(),
+		P99:     r.P99.Milliseconds(),
+		Max:     r.Max.Milliseconds(),
+		Jitter:  r.Jitter.Milliseconds(),
+		Verdict: r.Verdict,
+	}, nil
 }
 
 // ---------- helpers ----------
