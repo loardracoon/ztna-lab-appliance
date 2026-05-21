@@ -1,0 +1,48 @@
+#!/sbin/openrc-run
+# OpenRC service script for ZTNA Lab Appliance
+# Installed at /etc/init.d/ztna-lab
+
+name="ZTNA Lab Appliance"
+description="Data-plane validation toolkit for ZTNA gateways"
+
+command="/usr/local/bin/ztna-lab"
+command_args="daemon"
+command_user="ztna-lab:ztna-lab"
+command_background="yes"
+pidfile="/run/ztna-lab.pid"
+output_log="/var/log/ztna-lab/stdout.log"
+error_log="/var/log/ztna-lab/stderr.log"
+
+extra_started_commands="reload"
+
+depend() {
+    need net
+    after firewall
+    use dns logger
+}
+
+start_pre() {
+    # Garante diretórios e ownership (caso o usuário tenha apagado e re-criado)
+    checkpath -d -m 0755 -o ztna-lab:ztna-lab /var/lib/ztna-lab
+    checkpath -d -m 0755 -o ztna-lab:ztna-lab /var/log/ztna-lab
+
+    # Capability pra bindar portas <1024 sem rodar como root.
+    # Re-aplica em todo start porque uma atualização do binário (cp/mv) perde xattrs.
+    if command -v setcap >/dev/null 2>&1; then
+        setcap 'cap_net_bind_service=+ep' "$command" 2>/dev/null || true
+    fi
+
+    # Carrega variáveis de ambiente do config.env, se existir.
+    if [ -f /etc/ztna-lab/config.env ]; then
+        set -a
+        # shellcheck source=/dev/null
+        . /etc/ztna-lab/config.env
+        set +a
+    fi
+}
+
+reload() {
+    ebegin "Reloading $name"
+    start-stop-daemon --signal HUP --pidfile "$pidfile"
+    eend $?
+}

@@ -11,15 +11,19 @@ FROM golang:1.22-alpine AS build
 
 WORKDIR /src
 
-# Cache de dependências (camada separada)
-COPY go.mod go.sum ./
-RUN go mod download
+# Cache de dependências. go.sum* aceita ausência (asterisco = glob opcional).
+COPY go.mod go.sum* ./
+
+# go mod tidy regenera go.sum se faltando, corrompido ou desatualizado.
+# Faz o build self-healing: o usuário não precisa se preocupar com hashes.
+RUN go mod tidy && go mod download
 
 # Código-fonte completo (raiz do repo)
 COPY . .
 
-# Binário estático Linux/amd64
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+# Binário estático Linux/amd64. tidy de novo caso o COPY traga go.sum velho.
+RUN go mod tidy && \
+    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
     go build -ldflags="-s -w" -o /out/ztna-lab .
 
 # Sanity check

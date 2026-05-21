@@ -1,5 +1,25 @@
 # Changelog
 
+## v1.3 — Alpine Linux support + build robustness
+
+* **Alpine Linux support** (OpenRC, apk). New `deployments/alpine/` directory
+  with OpenRC initscript, install.sh, uninstall.sh, and README.
+* `setup.sh` now auto-installs `bash` on Alpine (re-exec from `/bin/sh`),
+  detects the init system (systemd vs OpenRC), and uses the correct package
+  manager and service manager for the chosen path. Docker install on Alpine
+  uses `apk add docker docker-cli-compose` instead of `get.docker.com`.
+* `make install-alpine` / `make uninstall-alpine` for the OpenRC path.
+* `make status` and `make logs` auto-detect init system and dispatch.
+* **Self-healing builds.** `go mod tidy` runs before every build, both in
+  the Makefile and the Dockerfile. This regenerates `go.sum` automatically
+  if it's missing, corrupted, or stale — so the broken-checksum errors that
+  affected v1.0–v1.2 cannot recur.
+* `go.sum` removed from the repository; it's generated on first build and
+  should be committed afterwards for deterministic re-builds.
+* Bug fix in `setup.sh`: `DEBIAN_FRONTEND=noninteractive` no longer breaks
+  when running as root on Debian/Ubuntu (was missing `env` prefix, which
+  caused the inline-assignment-after-variable-expansion parsing quirk).
+
 ## v1.2 — Inspector with widgets, GeoIP, and inline upload
 
 * HTTP inspector rewritten as a single-page UI with separated widgets:

@@ -8,14 +8,18 @@ CLI). Deployable as a Docker container or as a systemd service on bare metal.
 ## Quick install
 
 ```bash
-unzip ztna-lab-appliance-v1.2.zip
-cd ztna-lab-appliance-v1.2
+unzip ztna-lab-appliance-v1.3.zip
+cd ztna-lab-appliance-v1.3
 ./setup.sh
 ```
 
-The installer detects your distro, asks for the deployment mode (Docker or
-bare metal), installs any missing dependencies, builds the binary, and starts
-the appliance.
+The installer detects your distro and init system (systemd or OpenRC), asks
+for the deployment mode (Docker or bare metal), installs any missing
+dependencies, builds the binary, and starts the appliance. On Alpine, it
+auto-installs `bash` and re-execs.
+
+Tested on Debian/Ubuntu (systemd), RHEL/Rocky/Alma/Fedora (systemd), and
+Alpine Linux 3.18+ (OpenRC).
 
 ## What it does
 
@@ -56,14 +60,15 @@ conflict resolution, and systemd hardening details.
 
 ```
 .
-├── setup.sh                    Interactive installer
-├── Makefile                    All targets: build, install, docker-up, etc.
+├── setup.sh                    Interactive installer (auto-detects systemd/OpenRC)
+├── Makefile                    All targets: build, install, install-alpine, docker-up, etc.
 ├── *.go                        Go sources (main, appliance layer, packages)
 ├── admin/  dns/  httpd/        Per-feature packages
 ├── logger/  sshd/
 ├── deployments/
 │   ├── docker/                 Dockerfile + compose with host/bridge profiles
-│   └── linux/                  systemd unit + install.sh + uninstall.sh
+│   ├── linux/                  systemd unit + install.sh + uninstall.sh
+│   └── alpine/                 OpenRC initscript + install.sh + uninstall.sh
 └── docs/APPLIANCE.md           Detailed operational doc (PT-BR)
 ```
 
