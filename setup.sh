@@ -96,6 +96,40 @@ ensure_curl() {
     command -v curl >/dev/null 2>&1 || pkg_install curl
 }
 
+# No Alpine, vários pacotes (docker, docker-cli-compose, libcap utils) vivem no
+# repositório "community" que pode vir desabilitado em instalações mínimas/Virt.
+# Esta função garante que ele está habilitado antes de qualquer apk add que
+# dependa dele.
+ensure_alpine_community() {
+    [ "$DISTRO_ID" = "alpine" ] || return 0
+
+    # Já habilitado (linha não-comentada contendo /community)?
+    if grep -qE '^[^#]+/community([[:space:]]|$)' /etc/apk/repositories 2>/dev/null; then
+        return 0
+    fi
+
+    info "Enabling Alpine community repository..."
+
+    # Caso 1: linha está lá mas comentada — descomentar.
+    if grep -qE '^#.*\/community([[:space:]]|$)' /etc/apk/repositories 2>/dev/null; then
+        $SUDO sed -i 's|^#\([[:space:]]*[A-Za-z].*\/community\)|\1|' /etc/apk/repositories
+    fi
+
+    # Caso 2: ainda não tem (instalação muito enxuta) — adicionar.
+    if ! grep -qE '^[^#]+/community([[:space:]]|$)' /etc/apk/repositories 2>/dev/null; then
+        # Tenta derivar a versão do branch já em uso (vX.Y) ou cai pra latest-stable
+        local branch
+        branch=$(grep -oE 'v[0-9]+\.[0-9]+' /etc/apk/repositories 2>/dev/null | head -1)
+        branch="${branch:-latest-stable}"
+        echo "https://dl-cdn.alpinelinux.org/alpine/${branch}/community" \
+            | $SUDO tee -a /etc/apk/repositories >/dev/null
+    fi
+
+    # Atualiza o índice pra refletir a mudança.
+    $SUDO apk update >/dev/null 2>&1 || warn "apk update failed — check network."
+    ok "Alpine community repo enabled."
+}
+
 ensure_docker() {
     if command -v docker >/dev/null 2>&1; then
         ok "Docker: $(docker --version | head -1)"
@@ -109,7 +143,8 @@ ensure_docker() {
 
         case "$DISTRO_ID" in
             alpine)
-                # No Alpine: instalar via apk e habilitar via OpenRC
+                # No Alpine: docker e compose vivem no repo community.
+                ensure_alpine_community
                 pkg_install docker docker-cli-compose
                 $SUDO rc-update add docker default >/dev/null 2>&1 || true
                 $SUDO service docker start
@@ -222,7 +257,7 @@ check_ports() {
 clear 2>/dev/null || true
 cat <<EOF
 
-${C_BOLD}ZTNA Lab Appliance${C_RST} — installer · v1.3
+${C_BOLD}ZTNA Lab Appliance${C_RST} — installer · v1.3.1
 
 Detected environment:
   Distribution :  ${PRETTY_NAME:-$DISTRO_ID}
