@@ -2,14 +2,17 @@
 //
 // Aceita conexões com qualquer credencial e oferece um shell interativo
 // minimalista que ecoa comandos e responde a alguns comandos pré-definidos
-// (whoami, exit). NÃO É um shell real — é um endpoint de teste pra validar
-// que o ZTNA gateway permite/bloqueia tráfego SSH e ver o que chega.
+// (whoami, all-users, exit). NÃO É um shell real — é um endpoint de teste
+// para validar que o ZTNA gateway permite/bloqueia tráfego SSH.
 //
-// A chave host RSA é persistida no disco para que clientes SSH não fiquem
-// vendo "host key changed" a cada restart do appliance.
+// Suporta chaves host RSA e/ou ED25519, configuradas via Config (lida de JSON).
+// Em modo debug registra tentativas de handshake, cifras negociadas e falhas
+// de autenticação com detalhes suficientes para diagnosticar problemas de
+// cipher/kex/fragmentação.
 package sshd
 
 import (
+	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
@@ -18,6 +21,8 @@ import (
 	"io"
 	"net"
 	"os"
+	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -37,9 +42,9 @@ type Session struct {
 
 // Server é o listener TCP/2222.
 type Server struct {
-	addr     string
-	keyPath  string
-	config   *ssh.ServerConfig
+	addr   string
+	cfg    Config
+	config *ssh.ServerConfig
 
 	mu       sync.Mutex
 	listener net.Listener
@@ -50,20 +55,20 @@ type Server struct {
 	nextID   int64
 }
 
-// NewServer cria o server. addr no formato ":2222". hostKeyPath é o
-// caminho da chave host (será criada se não existir).
-func NewServer(addr, hostKeyPath string) *Server {
+// NewServer cria o server. addr no formato ":2222".
+// cfg define as chaves host e opções de debug (veja Config e LoadConfig).
+func NewServer(addr string, cfg Config) *Server {
 	if addr == "" {
 		addr = ":2222"
 	}
 	return &Server{
 		addr:     addr,
-		keyPath:  hostKeyPath,
+		cfg:      cfg,
 		sessions: map[int]*Session{},
 	}
 }
 
-// Start carrega/gera a host key, configura o SSH server e começa a aceitar.
+// Start carrega/gera as host keys, configura o SSH server e começa a aceitar.
 func (s *Server) Start() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -71,12 +76,7 @@ func (s *Server) Start() error {
 		return fmt.Errorf("SSH já está rodando")
 	}
 
-	signer, err := loadOrGenerateHostKey(s.keyPath)
-	if err != nil {
-		return fmt.Errorf("host key: %w", err)
-	}
-
-	s.config = &ssh.ServerConfig{
+	scfg := &ssh.ServerConfig{
 		// Mock: aceita qualquer credencial. Útil para teste de gateway.
 		PasswordCallback: func(c ssh.ConnMetadata, password []byte) (*ssh.Permissions, error) {
 			logger.Log("SSH ", fmt.Sprintf("auth attempt from=%s user=%s password=%q", c.RemoteAddr(), c.User(), password))
@@ -87,7 +87,54 @@ func (s *Server) Start() error {
 			return &ssh.Permissions{}, nil
 		},
 	}
-	s.config.AddHostKey(signer)
+
+	// AuthLogCallback só está disponível em debug: loga cada método tentado
+	// e se foi aceito ou rejeitado — útil para diagnosticar falhas de auth.
+	if s.cfg.Debug {
+		scfg.AuthLogCallback = func(conn ssh.ConnMetadata, method string, err error) {
+			if err != nil {
+				logger.Log("SSH ", fmt.Sprintf("[debug] auth rejected from=%s user=%s method=%s err=%v",
+					conn.RemoteAddr(), conn.User(), method, err))
+			} else {
+				logger.Log("SSH ", fmt.Sprintf("[debug] auth accepted from=%s user=%s method=%s",
+					conn.RemoteAddr(), conn.User(), method))
+			}
+		}
+	}
+
+	added := 0
+	if s.cfg.RSAKeyPath != "" {
+		signer, err := loadOrGenerateRSAKey(s.cfg.RSAKeyPath)
+		if err != nil {
+			return fmt.Errorf("rsa host key: %w", err)
+		}
+		scfg.AddHostKey(signer)
+		added++
+		logger.Log("SSH ", "host key RSA loaded: "+s.cfg.RSAKeyPath)
+	}
+	if s.cfg.Ed25519KeyPath != "" {
+		signer, err := loadOrGenerateEd25519Key(s.cfg.Ed25519KeyPath)
+		if err != nil {
+			return fmt.Errorf("ed25519 host key: %w", err)
+		}
+		scfg.AddHostKey(signer)
+		added++
+		logger.Log("SSH ", "host key Ed25519 loaded: "+s.cfg.Ed25519KeyPath)
+	}
+	if added == 0 {
+		return fmt.Errorf("nenhuma host key configurada (rsa_key_path e ed25519_key_path estão vazios)")
+	}
+
+	if s.cfg.Debug {
+		logger.Log("SSH ", fmt.Sprintf("[debug] %d host key(s) ativa(s), debug mode ON", added))
+		// Algoritmos padrão do golang.org/x/crypto/ssh — útil para comparar
+		// com o que o cliente oferece quando há falha de negociação.
+		logger.Log("SSH ", "[debug] ciphers: aes128-gcm@openssh.com, aes256-gcm@openssh.com, chacha20-poly1305@openssh.com, aes128-ctr, aes192-ctr, aes256-ctr")
+		logger.Log("SSH ", "[debug] kex: curve25519-sha256, curve25519-sha256@libssh.org, ecdh-sha2-nistp256, ecdh-sha2-nistp384, ecdh-sha2-nistp521, diffie-hellman-group14-sha256, diffie-hellman-group14-sha1")
+		logger.Log("SSH ", "[debug] macs: hmac-sha2-256-etm@openssh.com, hmac-sha2-512-etm@openssh.com, hmac-sha2-256, hmac-sha2-512, hmac-sha1")
+	}
+
+	s.config = scfg
 
 	ln, err := net.Listen("tcp", s.addr)
 	if err != nil {
@@ -98,7 +145,7 @@ func (s *Server) Start() error {
 
 	go s.acceptLoop()
 
-	logger.Log("SSH ", fmt.Sprintf("server started TCP%s", s.addr))
+	logger.Log("SSH ", fmt.Sprintf("server started TCP%s (debug=%v)", s.addr, s.cfg.Debug))
 	return nil
 }
 
@@ -149,7 +196,6 @@ func (s *Server) acceptLoop() {
 
 		conn, err := ln.Accept()
 		if err != nil {
-			// listener fechado ou erro fatal
 			return
 		}
 		go s.handleConn(conn)
@@ -159,12 +205,27 @@ func (s *Server) acceptLoop() {
 func (s *Server) handleConn(nConn net.Conn) {
 	defer nConn.Close()
 
+	if s.cfg.Debug {
+		logger.Log("SSH ", fmt.Sprintf("[debug] TCP connection from=%s", nConn.RemoteAddr()))
+	}
+
 	sshConn, chans, reqs, err := ssh.NewServerConn(nConn, s.config)
 	if err != nil {
+		if s.cfg.Debug {
+			// Loga o tipo do erro para distinguir falhas de cipher/kex de
+			// erros de rede ou protocolo.
+			logger.Log("SSH ", fmt.Sprintf("[debug] handshake error type=%T msg=%q from=%s",
+				err, err.Error(), nConn.RemoteAddr()))
+		}
 		logger.Log("SSH ", fmt.Sprintf("handshake failed from=%s: %v", nConn.RemoteAddr(), err))
 		return
 	}
 	defer sshConn.Close()
+
+	if s.cfg.Debug {
+		logger.Log("SSH ", fmt.Sprintf("[debug] handshake ok from=%s user=%s clientVersion=%q",
+			sshConn.RemoteAddr(), sshConn.User(), sshConn.ClientVersion()))
+	}
 
 	sid := int(atomic.AddInt64(&s.nextID, 1))
 	sess := &Session{
@@ -196,18 +257,20 @@ func (s *Server) handleConn(nConn net.Conn) {
 		if err != nil {
 			continue
 		}
-		go handleShell(ch, requests, sess)
+		go handleShell(ch, requests, s, sess)
 	}
 }
 
 // handleShell oferece um "shell" minimalista. Aceita comandos:
-//   whoami → echo do user
-//   exit / quit → fecha a sessão
-//   qualquer outra coisa → echo
-func handleShell(ch ssh.Channel, requests <-chan *ssh.Request, sess *Session) {
+//
+//	whoami      → usuario e IP de origem da sessão atual
+//	all-users   → tabela com todos os usuários conectados e seus IPs
+//	exit/quit   → fecha a sessão
+//	outros      → eco do que foi digitado
+func handleShell(ch ssh.Channel, requests <-chan *ssh.Request, srv *Server, sess *Session) {
 	defer ch.Close()
 
-	// aceita os requests de pty/shell, ignora o resto
+	// Aceita pty-req e shell; rejeita o resto.
 	go func() {
 		for req := range requests {
 			switch req.Type {
@@ -224,8 +287,8 @@ func handleShell(ch ssh.Channel, requests <-chan *ssh.Request, sess *Session) {
 	}()
 
 	fmt.Fprintf(ch, "\r\n*** ZTNA Lab — SSH mock target ***\r\n")
-	fmt.Fprintf(ch, "user=%s  session=%d\r\n", sess.User, sess.ID)
-	fmt.Fprintf(ch, "Commands: whoami, exit. Anything else is echoed.\r\n\r\n")
+	fmt.Fprintf(ch, "user=%s  ip=%s  session=%d\r\n", sess.User, sess.IP, sess.ID)
+	fmt.Fprintf(ch, "Commands: whoami, all-users, exit. Anything else is echoed.\r\n\r\n")
 
 	buf := make([]byte, 0, 256)
 	prompt := func() { fmt.Fprintf(ch, "%s@ztna-lab$ ", sess.User) }
@@ -246,7 +309,9 @@ func handleShell(ch ssh.Channel, requests <-chan *ssh.Request, sess *Session) {
 			switch line {
 			case "":
 			case "whoami":
-				fmt.Fprintf(ch, "%s\r\n", sess.User)
+				fmt.Fprintf(ch, "user=%s  ip=%s\r\n", sess.User, sess.IP)
+			case "all-users":
+				printAllUsers(ch, srv)
 			case "exit", "quit", "logout":
 				fmt.Fprint(ch, "bye.\r\n")
 				return
@@ -269,18 +334,43 @@ func handleShell(ch ssh.Channel, requests <-chan *ssh.Request, sess *Session) {
 	}
 }
 
-// ─────────────────────── host key ───────────────────────
+func printAllUsers(ch ssh.Channel, srv *Server) {
+	sessions := srv.Sessions()
+	sort.Slice(sessions, func(i, j int) bool { return sessions[i].ID < sessions[j].ID })
 
-func loadOrGenerateHostKey(path string) (ssh.Signer, error) {
+	fmt.Fprintf(ch, "\r\n%-5s  %-16s  %-15s  %s\r\n", "ID", "USER", "IP", "CONNECTED")
+	fmt.Fprintf(ch, "%s\r\n", strings.Repeat("-", 62))
+	for _, s := range sessions {
+		fmt.Fprintf(ch, "%-5d  %-16s  %-15s  %s\r\n",
+			s.ID,
+			truncate(s.User, 16),
+			truncate(s.IP, 15),
+			s.ConnectedAt.Format("2006-01-02 15:04:05"),
+		)
+	}
+	if len(sessions) == 0 {
+		fmt.Fprint(ch, "(no active sessions)\r\n")
+	}
+	fmt.Fprint(ch, "\r\n")
+}
+
+func truncate(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max-1] + ">"
+}
+
+// ─────────────────────── host keys ───────────────────────
+
+func loadOrGenerateRSAKey(path string) (ssh.Signer, error) {
 	if data, err := os.ReadFile(path); err == nil {
-		signer, err := ssh.ParsePrivateKey(data)
-		if err == nil {
+		if signer, err := ssh.ParsePrivateKey(data); err == nil {
 			return signer, nil
 		}
-		logger.Log("SSH ", fmt.Sprintf("host key at %s is unreadable, regenerating: %v", path, err))
+		logger.Log("SSH ", fmt.Sprintf("RSA host key at %s unreadable, regenerating", path))
 	}
 
-	// gera RSA-2048
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		return nil, err
@@ -290,15 +380,40 @@ func loadOrGenerateHostKey(path string) (ssh.Signer, error) {
 		Bytes: x509.MarshalPKCS1PrivateKey(key),
 	}
 	pemBytes := pem.EncodeToMemory(pemBlock)
-
-	if path != "" {
-		if err := os.WriteFile(path, pemBytes, 0o600); err != nil {
-			logger.Log("SSH ", fmt.Sprintf("warning: could not persist host key to %s: %v", path, err))
-		} else {
-			logger.Log("SSH ", "generated new host key at "+path)
-		}
-	}
+	persistKey(path, pemBytes, "RSA")
 	return ssh.ParsePrivateKey(pemBytes)
+}
+
+func loadOrGenerateEd25519Key(path string) (ssh.Signer, error) {
+	if data, err := os.ReadFile(path); err == nil {
+		if signer, err := ssh.ParsePrivateKey(data); err == nil {
+			return signer, nil
+		}
+		logger.Log("SSH ", fmt.Sprintf("Ed25519 host key at %s unreadable, regenerating", path))
+	}
+
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return nil, err
+	}
+	pemBlock, err := ssh.MarshalPrivateKey(priv, "")
+	if err != nil {
+		return nil, err
+	}
+	pemBytes := pem.EncodeToMemory(pemBlock)
+	persistKey(path, pemBytes, "Ed25519")
+	return ssh.ParsePrivateKey(pemBytes)
+}
+
+func persistKey(path string, data []byte, keyType string) {
+	if path == "" {
+		return
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		logger.Log("SSH ", fmt.Sprintf("warning: could not persist %s host key to %s: %v", keyType, path, err))
+	} else {
+		logger.Log("SSH ", fmt.Sprintf("generated new %s host key at %s", keyType, path))
+	}
 }
 
 func ipOnly(addr net.Addr) string {

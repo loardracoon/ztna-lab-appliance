@@ -70,17 +70,28 @@ func runDaemon() {
 	if dnsPath == "" {
 		dnsPath = "/data/dns_records.json"
 	}
-	sshKeyPath := os.Getenv("ZTNA_SSH_KEY")
-	if sshKeyPath == "" {
-		sshKeyPath = "/data/ssh_host_key"
+
+	// Config do SSH server lida de arquivo JSON. Se não existir, usa defaults.
+	sshCfgPath := os.Getenv("ZTNA_SSH_CONFIG")
+	if sshCfgPath == "" {
+		sshCfgPath = "/data/sshd.json"
+	}
+	sshCfg, cfgErr := sshd.LoadConfig(sshCfgPath)
+	if cfgErr != nil {
+		logger.Log("SYS ", "SSH config error: "+cfgErr.Error()+", usando defaults")
+		sshCfg = sshd.Config{}
+	}
+	if sshCfg.RSAKeyPath == "" && sshCfg.Ed25519KeyPath == "" {
+		sshKeyPath := os.Getenv("ZTNA_SSH_KEY")
+		if sshKeyPath == "" {
+			sshKeyPath = "/data/ssh_host_key"
+		}
+		sshCfg.RSAKeyPath = sshKeyPath
 	}
 
-	// Constrói os servidores. As funções New* abaixo precisam existir nos
-	// pacotes do projeto. Se as suas hoje ainda usam paths fixos, refatore
-	// para receber o path como argumento.
 	dnsSrv := dns.NewServer(dnsPath, "1.1.1.1:53")
 	httpSrv := httpd.NewServer(":80")
-	sshSrv := sshd.NewServer(":2222", sshKeyPath)
+	sshSrv := sshd.NewServer(":2222", sshCfg)
 
 	// Wire-up do latency runner para a Admin API.
 	admin.LatencyFn = runLatencyAPI

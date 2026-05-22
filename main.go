@@ -45,9 +45,19 @@ func runREPL() {
 	dnsPath := envDefault("ZTNA_DNS_RECORDS", "dns_records.json")
 	sshKey := envDefault("ZTNA_SSH_KEY", "ssh_host_key")
 
+	sshCfgPath := envDefault("ZTNA_SSH_CONFIG", "sshd.json")
+	sshCfg, err := sshd.LoadConfig(sshCfgPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "aviso: erro ao ler SSH config (%s): %v\n", sshCfgPath, err)
+		sshCfg = sshd.Config{}
+	}
+	if sshCfg.RSAKeyPath == "" && sshCfg.Ed25519KeyPath == "" {
+		sshCfg.RSAKeyPath = sshKey
+	}
+
 	replDNS = dns.NewServer(dnsPath, "1.1.1.1:53")
 	replHTTP = httpd.NewServer(":80")
-	replSSH = sshd.NewServer(":2222", sshKey)
+	replSSH = sshd.NewServer(":2222", sshCfg)
 
 	historyFile := envDefault("ZTNA_HISTORY_FILE", ".ztna_lab.history")
 	rl, err := readline.NewEx(&readline.Config{
