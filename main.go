@@ -43,6 +43,7 @@ func runREPL() {
 	// Inicializa instâncias dos servidores. Paths vêm de env vars (mesmos
 	// usados pelo daemon), com defaults pra uso local.
 	dnsPath := envDefault("ZTNA_DNS_RECORDS", "dns_records.json")
+
 	sshCfg := sshd.ConfigFromEnv()
 	if sshCfg.RSAKeyPath == "" && sshCfg.Ed25519KeyPath == "" {
 		sshCfg.RSAKeyPath = "ssh_host_key"
