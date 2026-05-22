@@ -1,38 +1,36 @@
 package sshd
 
 import (
-	"encoding/json"
 	"os"
+	"strings"
 )
 
-// Config define as opções do servidor SSH lidas de um arquivo JSON simples.
+// Config define as opções do servidor SSH.
+// Populada via ConfigFromEnv a partir das variáveis de ambiente:
 //
-// Exemplo de /data/sshd.json:
+//	ZTNA_SSH_KEY          caminho da chave RSA (gerada se não existir)
+//	ZTNA_SSH_ED25519_KEY  caminho da chave Ed25519 (opcional)
+//	ZTNA_SSH_DEBUG        "true" ou "1" para ativar debug (padrão: false)
 //
-//	{
-//	  "rsa_key_path":     "/data/ssh_host_rsa_key",
-//	  "ed25519_key_path": "/data/ssh_host_ed25519_key",
-//	  "debug":            true
-//	}
-//
-// Ao menos um dos campos *_key_path deve estar preenchido. Se o arquivo não
-// existir, LoadConfig retorna Config{} sem erro — o chamador define os defaults.
+// Ao menos uma das key paths deve estar preenchida antes de chamar Start.
+// O debug pode ser alterado em runtime via Server.SetDebug sem reiniciar.
 type Config struct {
-	RSAKeyPath     string `json:"rsa_key_path"`
-	Ed25519KeyPath string `json:"ed25519_key_path"`
-	Debug          bool   `json:"debug"`
+	RSAKeyPath     string
+	Ed25519KeyPath string
+	Debug          bool
 }
 
-// LoadConfig lê o arquivo JSON em path. Se o arquivo não existir retorna
-// Config{} sem erro — o chamador é responsável por preencher os defaults.
-func LoadConfig(path string) (Config, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return Config{}, nil
-		}
-		return Config{}, err
+// ConfigFromEnv lê as variáveis de ambiente e retorna a Config.
+// Não define defaults de path — o chamador é responsável pelo fallback.
+func ConfigFromEnv() Config {
+	cfg := Config{}
+	if v := os.Getenv("ZTNA_SSH_KEY"); v != "" {
+		cfg.RSAKeyPath = v
 	}
-	var cfg Config
-	return cfg, json.Unmarshal(data, &cfg)
+	if v := os.Getenv("ZTNA_SSH_ED25519_KEY"); v != "" {
+		cfg.Ed25519KeyPath = v
+	}
+	v := strings.ToLower(os.Getenv("ZTNA_SSH_DEBUG"))
+	cfg.Debug = v == "true" || v == "1"
+	return cfg
 }

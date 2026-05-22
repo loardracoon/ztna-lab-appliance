@@ -71,22 +71,10 @@ func runDaemon() {
 		dnsPath = "/data/dns_records.json"
 	}
 
-	// Config do SSH server lida de arquivo JSON. Se não existir, usa defaults.
-	sshCfgPath := os.Getenv("ZTNA_SSH_CONFIG")
-	if sshCfgPath == "" {
-		sshCfgPath = "/data/sshd.json"
-	}
-	sshCfg, cfgErr := sshd.LoadConfig(sshCfgPath)
-	if cfgErr != nil {
-		logger.Log("SYS ", "SSH config error: "+cfgErr.Error()+", usando defaults")
-		sshCfg = sshd.Config{}
-	}
+	// Config do SSH server lida das variáveis de ambiente.
+	sshCfg := sshd.ConfigFromEnv()
 	if sshCfg.RSAKeyPath == "" && sshCfg.Ed25519KeyPath == "" {
-		sshKeyPath := os.Getenv("ZTNA_SSH_KEY")
-		if sshKeyPath == "" {
-			sshKeyPath = "/data/ssh_host_key"
-		}
-		sshCfg.RSAKeyPath = sshKeyPath
+		sshCfg.RSAKeyPath = "/data/ssh_host_key"
 	}
 
 	dnsSrv := dns.NewServer(dnsPath, "1.1.1.1:53")

@@ -43,16 +43,9 @@ func runREPL() {
 	// Inicializa instâncias dos servidores. Paths vêm de env vars (mesmos
 	// usados pelo daemon), com defaults pra uso local.
 	dnsPath := envDefault("ZTNA_DNS_RECORDS", "dns_records.json")
-	sshKey := envDefault("ZTNA_SSH_KEY", "ssh_host_key")
-
-	sshCfgPath := envDefault("ZTNA_SSH_CONFIG", "sshd.json")
-	sshCfg, err := sshd.LoadConfig(sshCfgPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "aviso: erro ao ler SSH config (%s): %v\n", sshCfgPath, err)
-		sshCfg = sshd.Config{}
-	}
+	sshCfg := sshd.ConfigFromEnv()
 	if sshCfg.RSAKeyPath == "" && sshCfg.Ed25519KeyPath == "" {
-		sshCfg.RSAKeyPath = sshKey
+		sshCfg.RSAKeyPath = "ssh_host_key"
 	}
 
 	replDNS = dns.NewServer(dnsPath, "1.1.1.1:53")
