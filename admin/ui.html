@@ -98,11 +98,26 @@ async function loadStatus() {
         <button onclick="toggle('${name.toLowerCase()}', ${info.running})">${info.running ? 'stop' : 'start'}</button>
       </span>
     </div>`;
-  document.getElementById('status').innerHTML = svc('DNS', s.dns) + svc('HTTP', s.http) + svc('SSH', s.ssh);
+  const sshDebugStyle = s.ssh.debug ? 'background:#1f4f6f;border-color:#2a6f8f;color:#79c0ff' : '';
+  const sshRow = `
+    <div class="row">
+      <span><b>SSH</b> <span style="color:#8b949e">:${s.ssh.port}</span></span>
+      <span>
+        <span class="pill ${s.ssh.running ? 'up' : 'down'}">${s.ssh.running ? 'UP' : 'DOWN'}</span>
+        <button onclick="toggle('ssh', ${s.ssh.running})">${s.ssh.running ? 'stop' : 'start'}</button>
+        <button style="${sshDebugStyle}" onclick="toggleDebug(${s.ssh.debug})" title="Ativar/desativar debug SSH">debug ${s.ssh.debug ? 'ON' : 'OFF'}</button>
+      </span>
+    </div>`;
+  document.getElementById('status').innerHTML = svc('DNS', s.dns) + svc('HTTP', s.http) + sshRow;
 }
 
 async function toggle(svc, isRunning) {
   await api(`/api/${svc}/${isRunning ? 'stop' : 'start'}`, { method: 'POST' });
+  loadStatus();
+}
+
+async function toggleDebug(isOn) {
+  await api('/api/ssh/debug', { method: 'POST', body: JSON.stringify({ enabled: !isOn }) });
   loadStatus();
 }
 

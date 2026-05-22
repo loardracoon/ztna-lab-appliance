@@ -5,10 +5,9 @@
 // (whoami, all-users, exit). NÃO É um shell real — é um endpoint de teste
 // para validar que o ZTNA gateway permite/bloqueia tráfego SSH.
 //
-// Suporta chaves host RSA e/ou ED25519, configuradas via Config (lida de JSON).
-// Em modo debug registra tentativas de handshake, cifras negociadas e falhas
-// de autenticação com detalhes suficientes para diagnosticar problemas de
-// cipher/kex/fragmentação.
+// Suporta chaves host RSA e/ou ED25519, configuradas via variáveis de
+// ambiente lidas por ConfigFromEnv. O modo debug pode ser ativado ou
+// desativado em runtime via SetDebug, sem reiniciar o servidor.
 package sshd
 
 import (
@@ -53,19 +52,42 @@ type Server struct {
 	sessMu   sync.RWMutex
 	sessions map[int]*Session
 	nextID   int64
+
+	// debugFlag permite alternar o modo debug em runtime sem reiniciar.
+	debugFlag atomic.Bool
 }
 
 // NewServer cria o server. addr no formato ":2222".
-// cfg define as chaves host e opções de debug (veja Config e LoadConfig).
+// cfg define as chaves host e estado inicial do debug (veja ConfigFromEnv).
 func NewServer(addr string, cfg Config) *Server {
 	if addr == "" {
 		addr = ":2222"
 	}
-	return &Server{
+	s := &Server{
 		addr:     addr,
 		cfg:      cfg,
 		sessions: map[int]*Session{},
 	}
+	s.debugFlag.Store(cfg.Debug)
+	return s
+}
+
+// SetDebug ativa ou desativa o modo debug em runtime, sem reiniciar o servidor.
+// A mudança é imediata: conexões subsequentes já usam o novo estado.
+func (s *Server) SetDebug(on bool) {
+	s.debugFlag.Store(on)
+	state := map[bool]string{true: "ON", false: "OFF"}[on]
+	logger.Log("SSH ", fmt.Sprintf("debug mode %s", state))
+	if on {
+		logger.Log("SSH ", "[debug] ciphers: aes128-gcm@openssh.com, aes256-gcm@openssh.com, chacha20-poly1305@openssh.com, aes128-ctr, aes192-ctr, aes256-ctr")
+		logger.Log("SSH ", "[debug] kex: curve25519-sha256, curve25519-sha256@libssh.org, ecdh-sha2-nistp256, ecdh-sha2-nistp384, ecdh-sha2-nistp521, diffie-hellman-group14-sha256, diffie-hellman-group14-sha1")
+		logger.Log("SSH ", "[debug] macs: hmac-sha2-256-etm@openssh.com, hmac-sha2-512-etm@openssh.com, hmac-sha2-256, hmac-sha2-512, hmac-sha1")
+	}
+}
+
+// IsDebug retorna o estado atual do modo debug.
+func (s *Server) IsDebug() bool {
+	return s.debugFlag.Load()
 }
 
 // Start carrega/gera as host keys, configura o SSH server e começa a aceitar.
@@ -86,12 +108,12 @@ func (s *Server) Start() error {
 			logger.Log("SSH ", fmt.Sprintf("pubkey auth from=%s user=%s type=%s", c.RemoteAddr(), c.User(), key.Type()))
 			return &ssh.Permissions{}, nil
 		},
-	}
-
-	// AuthLogCallback só está disponível em debug: loga cada método tentado
-	// e se foi aceito ou rejeitado — útil para diagnosticar falhas de auth.
-	if s.cfg.Debug {
-		scfg.AuthLogCallback = func(conn ssh.ConnMetadata, method string, err error) {
+		// AuthLogCallback sempre registrado; a guarda está dentro do closure
+		// para que toggles via SetDebug sejam refletidos imediatamente.
+		AuthLogCallback: func(conn ssh.ConnMetadata, method string, err error) {
+			if !s.IsDebug() {
+				return
+			}
 			if err != nil {
 				logger.Log("SSH ", fmt.Sprintf("[debug] auth rejected from=%s user=%s method=%s err=%v",
 					conn.RemoteAddr(), conn.User(), method, err))
@@ -99,7 +121,7 @@ func (s *Server) Start() error {
 				logger.Log("SSH ", fmt.Sprintf("[debug] auth accepted from=%s user=%s method=%s",
 					conn.RemoteAddr(), conn.User(), method))
 			}
-		}
+		},
 	}
 
 	added := 0
@@ -122,16 +144,7 @@ func (s *Server) Start() error {
 		logger.Log("SSH ", "host key Ed25519 loaded: "+s.cfg.Ed25519KeyPath)
 	}
 	if added == 0 {
-		return fmt.Errorf("nenhuma host key configurada (rsa_key_path e ed25519_key_path estão vazios)")
-	}
-
-	if s.cfg.Debug {
-		logger.Log("SSH ", fmt.Sprintf("[debug] %d host key(s) ativa(s), debug mode ON", added))
-		// Algoritmos padrão do golang.org/x/crypto/ssh — útil para comparar
-		// com o que o cliente oferece quando há falha de negociação.
-		logger.Log("SSH ", "[debug] ciphers: aes128-gcm@openssh.com, aes256-gcm@openssh.com, chacha20-poly1305@openssh.com, aes128-ctr, aes192-ctr, aes256-ctr")
-		logger.Log("SSH ", "[debug] kex: curve25519-sha256, curve25519-sha256@libssh.org, ecdh-sha2-nistp256, ecdh-sha2-nistp384, ecdh-sha2-nistp521, diffie-hellman-group14-sha256, diffie-hellman-group14-sha1")
-		logger.Log("SSH ", "[debug] macs: hmac-sha2-256-etm@openssh.com, hmac-sha2-512-etm@openssh.com, hmac-sha2-256, hmac-sha2-512, hmac-sha1")
+		return fmt.Errorf("nenhuma host key configurada (ZTNA_SSH_KEY e ZTNA_SSH_ED25519_KEY estão vazios)")
 	}
 
 	s.config = scfg
@@ -145,7 +158,10 @@ func (s *Server) Start() error {
 
 	go s.acceptLoop()
 
-	logger.Log("SSH ", fmt.Sprintf("server started TCP%s (debug=%v)", s.addr, s.cfg.Debug))
+	logger.Log("SSH ", fmt.Sprintf("server started TCP%s (debug=%v)", s.addr, s.IsDebug()))
+	if s.IsDebug() {
+		s.SetDebug(true) // emite os logs de algoritmos no startup se debug já ativo
+	}
 	return nil
 }
 
@@ -205,15 +221,13 @@ func (s *Server) acceptLoop() {
 func (s *Server) handleConn(nConn net.Conn) {
 	defer nConn.Close()
 
-	if s.cfg.Debug {
+	if s.IsDebug() {
 		logger.Log("SSH ", fmt.Sprintf("[debug] TCP connection from=%s", nConn.RemoteAddr()))
 	}
 
 	sshConn, chans, reqs, err := ssh.NewServerConn(nConn, s.config)
 	if err != nil {
-		if s.cfg.Debug {
-			// Loga o tipo do erro para distinguir falhas de cipher/kex de
-			// erros de rede ou protocolo.
+		if s.IsDebug() {
 			logger.Log("SSH ", fmt.Sprintf("[debug] handshake error type=%T msg=%q from=%s",
 				err, err.Error(), nConn.RemoteAddr()))
 		}
@@ -222,7 +236,7 @@ func (s *Server) handleConn(nConn net.Conn) {
 	}
 	defer sshConn.Close()
 
-	if s.cfg.Debug {
+	if s.IsDebug() {
 		logger.Log("SSH ", fmt.Sprintf("[debug] handshake ok from=%s user=%s clientVersion=%q",
 			sshConn.RemoteAddr(), sshConn.User(), sshConn.ClientVersion()))
 	}
@@ -270,7 +284,6 @@ func (s *Server) handleConn(nConn net.Conn) {
 func handleShell(ch ssh.Channel, requests <-chan *ssh.Request, srv *Server, sess *Session) {
 	defer ch.Close()
 
-	// Aceita pty-req e shell; rejeita o resto.
 	go func() {
 		for req := range requests {
 			switch req.Type {

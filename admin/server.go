@@ -73,6 +73,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/ssh/start", s.auth(s.handleSSHStart))
 	mux.HandleFunc("/api/ssh/stop", s.auth(s.handleSSHStop))
 	mux.HandleFunc("/api/ssh/sessions", s.auth(s.handleSSHSessions))
+	mux.HandleFunc("/api/ssh/debug", s.auth(s.handleSSHDebug))
 	mux.HandleFunc("/api/log/tail", s.auth(s.handleLogTail))
 	mux.HandleFunc("/api/latency", s.auth(s.handleLatency))
 	mux.HandleFunc("/api/health", s.handleHealth) // sem auth: usado por healthcheck
@@ -143,7 +144,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"dns":  map[string]any{"running": s.dnsSrv != nil && s.dnsSrv.IsRunning(), "port": 53},
 		"http": map[string]any{"running": s.httpSrv != nil && s.httpSrv.IsRunning(), "port": 80},
-		"ssh":  map[string]any{"running": s.sshSrv != nil && s.sshSrv.IsRunning(), "port": 2222},
+		"ssh":  map[string]any{"running": s.sshSrv != nil && s.sshSrv.IsRunning(), "port": 2222, "debug": s.sshSrv != nil && s.sshSrv.IsDebug()},
 		"version": "appliance-1.0",
 	})
 }
@@ -260,6 +261,24 @@ func (s *Server) handleSSHStop(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleSSHSessions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.sshSrv.Sessions())
+}
+
+// POST /api/ssh/debug  body: {"enabled": true|false}
+func (s *Server) handleSSHDebug(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	var body struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
+		return
+	}
+	s.sshSrv.SetDebug(body.Enabled)
+	writeJSON(w, http.StatusOK, map[string]any{"debug": body.Enabled})
 }
 
 // --- Log ---
