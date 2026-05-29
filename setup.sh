@@ -1,10 +1,9 @@
 #!/bin/sh
 # shellcheck shell=bash
-# ZTNA Lab Appliance — Automated Installer v2.0
+# ZTNA Lab Appliance — Automated Git Installer & Optimizer
 #
 # Clona o repositório, para serviços existentes, instala o appliance
-# e (no modo bare metal) remove ferramentas de build para minimizar
-# o footprint da VM.
+# e remove ferramentas de build para minimizar o footprint da VM.
 #
 # Compatível: Alpine Linux, Debian, Ubuntu, CentOS / RHEL / Rocky / Alma e derivados.
 #
@@ -108,7 +107,6 @@ pkg_uninstall() {
 
 # ────────── funções auxiliares ──────────
 
-# Instala git e curl se ausentes.
 ensure_git_and_curl() {
     local missing=""
     command -v git  >/dev/null 2>&1 || missing="git"
@@ -120,22 +118,16 @@ ensure_git_and_curl() {
     fi
 }
 
-# No Alpine, pacotes como docker e libcap ficam no repositório community,
-# que pode vir comentado em instalações mínimas. Esta função garante que
-# ele está habilitado antes de qualquer apk add que dependa dele.
+# No Alpine, docker fica no repositório community que pode vir comentado.
 ensure_alpine_community() {
     [ "$DISTRO_ID" = "alpine" ] || return 0
     grep -qE '^[^#]+/community([[:space:]]|$)' /etc/apk/repositories 2>/dev/null && return 0
 
     info "Habilitando repositório community do Alpine..."
 
-    # Caso 1: linha presente mas comentada — descomentar.
     if grep -qE '^#.*\/community([[:space:]]|$)' /etc/apk/repositories 2>/dev/null; then
         $SUDO sed -i 's|^#\([[:space:]]*[A-Za-z].*\/community\)|\1|' /etc/apk/repositories
-    fi
-
-    # Caso 2: linha inexistente — adicionar inferindo a versão em uso.
-    if ! grep -qE '^[^#]+/community([[:space:]]|$)' /etc/apk/repositories 2>/dev/null; then
+    else
         local branch
         branch=$(grep -oE 'v[0-9]+\.[0-9]+' /etc/apk/repositories 2>/dev/null | head -1)
         echo "https://dl-cdn.alpinelinux.org/alpine/${branch:-latest-stable}/community" \
@@ -146,23 +138,20 @@ ensure_alpine_community() {
     ok "Repositório community habilitado."
 }
 
-# Instala Docker, verifica o plugin compose e garante que o daemon responde.
 ensure_docker() {
     if ! command -v docker >/dev/null 2>&1; then
         info "Instalando Docker..."
         case "$DISTRO_ID" in
             alpine)
-                # Alpine: docker + plugin compose ficam no community.
                 ensure_alpine_community
                 pkg_install docker docker-cli-compose
                 $SUDO rc-update add docker default >/dev/null 2>&1 || true
+                # Alpine usa OpenRC — 'rc-service', não 'service'
                 $SUDO rc-service docker start
                 sleep 3
                 ;;
             *)
-                # Demais distros: script oficial — lida com Debian, Ubuntu, CentOS,
-                # RHEL, Rocky, Alma e Fedora, instalando docker-ce + compose plugin.
-                ensure_git_and_curl  # curl pode não estar instalado ainda
+                ensure_git_and_curl
                 curl -fsSL https://get.docker.com -o /tmp/get-docker.sh
                 $SUDO sh /tmp/get-docker.sh >/dev/null
                 rm -f /tmp/get-docker.sh
@@ -172,7 +161,7 @@ ensure_docker() {
         ok "Docker instalado."
     fi
 
-    # Verifica plugin compose (necessário para `docker compose` e para o Makefile).
+    # Verifica plugin compose (necessário para docker compose e para o Makefile).
     if ! $SUDO docker compose version >/dev/null 2>&1 \
        && ! command -v docker-compose >/dev/null 2>&1; then
         info "Instalando plugin docker compose..."
@@ -241,19 +230,19 @@ check_ports() {
     fi
 }
 
-# Para instâncias existentes do appliance antes de reinstalar.
+# 1. PARAR SERVIÇOS EXISTENTES
 stop_existing() {
     hdr "Verificando instalações existentes"
     local found=0
 
     if [ "$INIT" = "systemd" ] && systemctl is-active --quiet ztna-lab 2>/dev/null; then
-        warn "Serviço systemd 'ztna-lab' ativo. Parando..."
+        warn "Serviço systemd 'ztna-lab' em execução. Parando..."
         $SUDO systemctl stop ztna-lab
         found=1
     fi
 
     if [ "$INIT" = "openrc" ] && rc-service ztna-lab status 2>/dev/null | grep -q "started"; then
-        warn "Serviço openrc 'ztna-lab' ativo. Parando..."
+        warn "Serviço openrc 'ztna-lab' em execução. Parando..."
         $SUDO rc-service ztna-lab stop
         found=1
     fi
@@ -274,7 +263,7 @@ stop_existing() {
 clear 2>/dev/null || true
 cat <<EOF
 
-${C_BOLD}ZTNA Lab Appliance${C_RST} — Instalador v2.0
+${C_BOLD}ZTNA Lab Appliance${C_RST} — Auto-Installer & Optimizer
 
   Distribuição :  ${PRETTY_NAME:-$DISTRO_ID}
   Pacotes      :  ${PKG:-nenhum detectado}
@@ -292,11 +281,12 @@ stop_existing
 hdr "Escolha o modo de deployment"
 cat <<EOF
   ${C_BOLD}1)${C_RST} Docker
-     Deploy isolado em container. Mantém Docker em execução na VM.
+     Deploy isolado via container. (Mantém o Docker rodando na VM).
 
   ${C_BOLD}2)${C_RST} Bare metal ${C_DIM}(footprint mínimo)${C_RST}
-     Usa Docker apenas para compilar o binário Go, depois instala
-     nativamente e ${C_RED}remove Docker, make, git e o código-fonte${C_RST}.
+     Usa Docker apenas para compilar o binário em Go.
+     Depois instala o binário nativamente e ${C_RED}remove o Docker${C_RST} e os
+     arquivos fonte para deixar a VM extremamente leve.
 
   ${C_BOLD}3)${C_RST} Cancelar
 EOF
@@ -313,38 +303,38 @@ while true; do
     esac
 done
 
-# ────────── clonar repositório ──────────
-hdr "Clonando repositório"
+# 2. CLONAR REPOSITÓRIO
+hdr "Clonando Repositório Oficial"
 REPO_URL="https://github.com/loardracoon/ztna-lab-appliance.git"
 REPO_DIR="/opt/ztna-lab-appliance"
 
 ensure_git_and_curl
 
 if [ -d "$REPO_DIR" ]; then
-    info "Removendo clone anterior em $REPO_DIR..."
+    info "Removendo repositório antigo em $REPO_DIR..."
     $SUDO rm -rf "$REPO_DIR"
 fi
 
 info "Clonando em $REPO_DIR..."
 $SUDO git clone -q "$REPO_URL" "$REPO_DIR"
-cd "$REPO_DIR" || die "Falha ao acessar $REPO_DIR."
+cd "$REPO_DIR" || die "Falha ao acessar o diretório clonado."
 ok "Repositório preparado."
 
-# ═══════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════
 #  MODO DOCKER
-# ═══════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════
 if [ "$MODE" = "docker" ]; then
-    hdr "Preparando deployment Docker"
+    hdr "Preparando Docker Deployment"
 
     ensure_docker
     ensure_docker_group
     check_ports 53 80 2222 9000
 
-    info "Subindo appliance (primeira execução baixa ~500 MB de imagens)..."
+    info "Iniciando appliance (primeira execução baixa ~500 MB de imagens)..."
     $SUDO make docker-up
     sleep 2
 
-    # Verifica container antes da API (daemon pode estar ok mas app com erro).
+    # Verifica container antes da API — app pode ter falhado mesmo com daemon ok.
     if ! $SUDO docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^ztna-appliance$'; then
         err "Container falhou ao iniciar. Veja os logs:"
         info "  $SUDO docker compose -f $REPO_DIR/deployments/docker/docker-compose.yml --profile host logs"
@@ -359,7 +349,7 @@ if [ "$MODE" = "docker" ]; then
         warn "Admin API ainda não respondeu (pode estar inicializando)."
     fi
 
-    hdr "Concluído — Modo Docker"
+    hdr "Concluído (Modo Docker)"
     cat <<EOF
   ${C_BOLD}Acesso:${C_RST}
     Admin UI       :  http://localhost:9000
@@ -377,22 +367,22 @@ EOF
     exit 0
 fi
 
-# ═══════════════════════════════════════════════════════════
-#  MODO BARE METAL (footprint mínimo)
-# ═══════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════
+#  MODO BARE METAL (Minimizando Footprint)
+# ════════════════════════════════════════════════
 if [ "$MODE" = "baremetal" ]; then
-    hdr "Build bare metal"
+    hdr "Preparando Build Baremetal"
 
     command -v make >/dev/null 2>&1 || pkg_install make
     ensure_docker
     check_ports 53 80 2222 9000
 
-    info "Compilando binário Go via Docker (sem Go instalado no host)..."
+    info "Compilando binário via Docker..."
     $SUDO make build
-    [ -f dist/ztna-lab ] || die "Build falhou — dist/ztna-lab não foi gerado."
+    [ -f dist/ztna-lab ] || die "Falha no build do binário."
     ok "Binário compilado: $(ls -lh dist/ztna-lab | awk '{print $5}')."
 
-    hdr "Instalando como serviço ${INIT}"
+    hdr "Instalando serviço nativo"
     if [ "$INIT" = "openrc" ]; then
         $SUDO make install-alpine
     else
@@ -400,7 +390,7 @@ if [ "$MODE" = "baremetal" ]; then
     fi
     sleep 2
 
-    # Verifica que o serviço subiu.
+    # Verifica que o serviço subiu antes de desinstalar as ferramentas de build.
     if [ "$INIT" = "systemd" ]; then
         $SUDO systemctl is-active --quiet ztna-lab \
             || { err "Serviço falhou. Veja: sudo journalctl -u ztna-lab --no-pager -n 40"; exit 1; }
@@ -416,11 +406,12 @@ if [ "$MODE" = "baremetal" ]; then
         warn "Admin API ainda não respondeu (pode estar inicializando)."
     fi
 
-    # ── minimizar footprint ──────────────────────────────────────
-    hdr "Minimizando footprint da VM"
+    # 3. LIMPEZA / FOOTPRINT (Remover tudo que não é necessário)
+    hdr "Minimizando Footprint da VM (Limpando recursos de build)"
 
-    info "Parando e desabilitando Docker..."
+    info "Parando daemon do Docker..."
     if [ "$INIT" = "openrc" ]; then
+        # Alpine usa OpenRC — 'rc-service', não 'service'
         $SUDO rc-service docker stop  2>/dev/null || true
         $SUDO rc-update del docker default 2>/dev/null || true
     else
@@ -428,30 +419,29 @@ if [ "$MODE" = "baremetal" ]; then
         $SUDO systemctl disable docker docker.socket 2>/dev/null || true
     fi
 
-    info "Removendo pacotes de build (Docker, make, git)..."
+    info "Removendo pacotes (Docker, Make, Git)..."
     case "$PKG" in
-        # apt — remove pacotes do Docker oficial (get.docker.com) + fallback docker.io
         apt) pkg_uninstall \
                 docker-ce docker-ce-cli containerd.io \
                 docker-buildx-plugin docker-compose-plugin \
                 docker.io docker-compose make git ;;
-        # Alpine — nomes próprios do community repo
         apk) pkg_uninstall docker docker-cli-compose make git ;;
-        # CentOS / RHEL / Rocky / Alma — pacotes do repo Docker oficial
         dnf|yum) pkg_uninstall \
                     docker-ce docker-ce-cli containerd.io \
                     docker-buildx-plugin docker-compose-plugin make git ;;
         *) pkg_uninstall docker make git ;;
     esac
 
-    info "Limpando dados residuais do Docker e código-fonte..."
+    info "Limpando cache de imagens Docker e o código-fonte clonado..."
     $SUDO rm -rf /var/lib/docker
+    # rm -f no socket (não rm -rf — é um arquivo especial, não um diretório)
     $SUDO rm -f  /run/docker.sock /var/run/docker.sock
     cd /
     $SUDO rm -rf "$REPO_DIR"
-    ok "Footprint minimizado — VM agora executa apenas o essencial."
 
-    hdr "Concluído — Modo Bare Metal"
+    ok "Limpeza concluída! A VM agora roda apenas o essencial."
+
+    hdr "Concluído (Modo Baremetal Leve)"
     if [ "$INIT" = "systemd" ]; then
         cat <<EOF
   ${C_BOLD}Acesso:${C_RST}
