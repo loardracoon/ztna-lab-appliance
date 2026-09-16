@@ -11,6 +11,14 @@
 // <path>.1 (overwriting the previous backup) and a fresh file is opened, so
 // disk usage is bounded at roughly 2x the limit and the tail view stays fast.
 //
+// Per-module gating: every module (SYS, DNS, HTTP, SSH, ADM, …) can be turned
+// off at runtime with SetEnabled. A disabled module's lines are dropped
+// entirely — not written to the file and not printed to stdout — which is how
+// a chatty module (typically HTTP, which logs every request on the test plane)
+// is stopped from burying the others. ZTNA_LOG_DISABLED_MODULES sets the
+// initial state. Module state changes are always recorded, even for a module
+// that is off, so the log always explains its own silence.
+//
 // Thread-safe via mutex. Init is idempotent — a later call reopens the file
 // if the path changed.
 package logger
@@ -21,6 +29,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -34,6 +43,11 @@ const (
 	maxTailBytes    = 8 * 1024 * 1024  // upper bound on what Tail reads into memory
 )
 
+// knownModules are the modules the appliance ships with, in the order the
+// admin panel displays them. Any other module name used with Log registers
+// itself on first use.
+var knownModules = []string{"SYS", "DNS", "HTTP", "SSH", "ADM"}
+
 var (
 	mu       sync.Mutex
 	file     *os.File
@@ -42,7 +56,30 @@ var (
 	lineCnt  int64 // lines in the current file
 	maxLines int64 = defaultMaxLines
 	maxBytes int64 = defaultMaxBytes
+
+	// enabled maps a normalized module name to whether its lines are kept.
+	enabled = defaultModuleState()
 )
+
+// ModuleState is one module and whether its lines are being recorded.
+type ModuleState struct {
+	Module  string `json:"module"`
+	Enabled bool   `json:"enabled"`
+}
+
+func defaultModuleState() map[string]bool {
+	m := make(map[string]bool, len(knownModules))
+	for _, name := range knownModules {
+		m[name] = true
+	}
+	return m
+}
+
+// normModule maps the padded module names used at call sites ("SSH ") onto
+// the canonical key ("SSH").
+func normModule(module string) string {
+	return strings.ToUpper(strings.TrimSpace(module))
+}
 
 // Stats describes the current state of the log file. It is what the admin
 // panel shows next to the log view so the recycling behaviour is visible.
@@ -66,6 +103,7 @@ func Init(path string) {
 
 	maxLines = envInt64("ZTNA_LOG_MAX_LINES", defaultMaxLines, minMaxLines)
 	maxBytes = envInt64("ZTNA_LOG_MAX_BYTES", defaultMaxBytes, 64*1024)
+	applyDisabledModulesEnv(os.Getenv("ZTNA_LOG_DISABLED_MODULES"))
 
 	if file != nil && curPath == path {
 		return
@@ -120,6 +158,19 @@ func Log(module, message string) {
 	mu.Lock()
 	defer mu.Unlock()
 
+	key := normModule(module)
+	if on, known := enabled[key]; known && !on {
+		return // module switched off: drop the line entirely
+	} else if !known {
+		enabled[key] = true // first sighting of a module registers it, enabled
+	}
+	writeLocked(module, message)
+}
+
+// writeLocked formats and records one line, bypassing the per-module switch.
+// Callers that must always leave a trace (module toggles, rotation notices)
+// use it directly. Must be called with mu held.
+func writeLocked(module, message string) {
 	ts := time.Now().Format("2006-01-02 15:04:05")
 	line := fmt.Sprintf("%s  [%s] %s\n", ts, module, message)
 
@@ -133,6 +184,79 @@ func Log(module, message string) {
 	lineCnt++
 	if lineCnt >= maxLines || written >= maxBytes {
 		rotate()
+	}
+}
+
+// SetEnabled turns a module's logging on or off at runtime. Turning it off
+// drops its lines completely — they never reach the file or stdout. The state
+// change itself is always recorded, so a log that suddenly goes quiet still
+// says why.
+func SetEnabled(module string, on bool) {
+	key := normModule(module)
+	if key == "" {
+		return
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if cur, known := enabled[key]; known && cur == on {
+		return // already in that state; do not spam the log
+	}
+	enabled[key] = on
+	state := "off"
+	if on {
+		state = "on"
+	}
+	writeLocked("SYS ", fmt.Sprintf("log module %s switched %s", key, state))
+}
+
+// IsEnabled reports whether a module's lines are being recorded. Unknown
+// modules count as enabled — they register themselves on first use.
+func IsEnabled(module string) bool {
+	key := normModule(module)
+	mu.Lock()
+	defer mu.Unlock()
+	on, known := enabled[key]
+	return !known || on
+}
+
+// Modules lists every known module and its state: the shipped modules first,
+// in display order, then anything that registered itself later, sorted.
+func Modules() []ModuleState {
+	mu.Lock()
+	defer mu.Unlock()
+
+	seen := make(map[string]bool, len(enabled))
+	out := make([]ModuleState, 0, len(enabled))
+	for _, name := range knownModules {
+		if on, ok := enabled[name]; ok {
+			out = append(out, ModuleState{Module: name, Enabled: on})
+			seen[name] = true
+		}
+	}
+	extra := make([]string, 0, len(enabled))
+	for name := range enabled {
+		if !seen[name] {
+			extra = append(extra, name)
+		}
+	}
+	sort.Strings(extra)
+	for _, name := range extra {
+		out = append(out, ModuleState{Module: name, Enabled: enabled[name]})
+	}
+	return out
+}
+
+// applyDisabledModulesEnv resets the module registry to the environment's
+// view of it: every shipped module on, then the ones named in
+// ZTNA_LOG_DISABLED_MODULES ("HTTP,DNS") switched off. Init owns module
+// state, so a second Init re-reads the environment rather than inheriting
+// runtime toggles. Must be called with mu held.
+func applyDisabledModulesEnv(raw string) {
+	enabled = defaultModuleState()
+	for _, part := range strings.Split(raw, ",") {
+		if key := normModule(part); key != "" {
+			enabled[key] = false
+		}
 	}
 }
 

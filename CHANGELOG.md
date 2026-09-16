@@ -1,5 +1,26 @@
 # Changelog
 
+## v1.5 — Per-module log switches
+
+* **A debug on/off switch per module in the admin panel** (SYS, DNS, HTTP, SSH,
+  ADM). Switching a module off drops its lines at the source — they are never
+  written to the log file and never printed to stdout — rather than merely
+  hiding them from the view. Available from the panel, from the CLI
+  (`log modules`, `log module <NAME> on|off`), via `GET`/`POST
+  /api/log/modules`, and as a startup default through
+  `ZTNA_LOG_DISABLED_MODULES=HTTP,DNS`.
+* A module switch is **always recorded**, even for a module that is off, so a
+  log that suddenly goes quiet still says why.
+* Modules that are not shipped with the appliance register themselves, enabled,
+  the first time they log — a new subsystem shows up in the panel on its own.
+* **Why SSH logs looked missing.** They were not: the HTTP test plane logs every
+  request, so a gateway health-checking port 80 pushes SSH out of the tail
+  window within seconds. Measured: 100 requests to `:80` leave 80 HTTP lines and
+  zero SSH lines in an 80-line tail. Switching HTTP off makes SSH visible
+  immediately, which is what the new per-module switches are for.
+* Log line colours are now shared between the tail view and the module
+  switches, so a module reads the same colour everywhere.
+
 ## v1.4 — English-only control surfaces + log view fixes
 
 * **Control panel and admin panel are now English-only.** Every user-facing

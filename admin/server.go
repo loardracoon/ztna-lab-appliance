@@ -75,6 +75,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/ssh/sessions", s.auth(s.handleSSHSessions))
 	mux.HandleFunc("/api/ssh/debug", s.auth(s.handleSSHDebug))
 	mux.HandleFunc("/api/log/tail", s.auth(s.handleLogTail))
+	mux.HandleFunc("/api/log/modules", s.auth(s.handleLogModules))
 	mux.HandleFunc("/api/latency", s.auth(s.handleLatency))
 	mux.HandleFunc("/api/health", s.handleHealth) // no auth: used by the healthcheck
 
@@ -301,7 +302,43 @@ func (s *Server) handleLogTail(w http.ResponseWriter, r *http.Request) {
 		"count":       len(lines),
 		"server_time": time.Now().Format("15:04:05"),
 		"file":        st,
+		"modules":     logger.Modules(),
 	})
+}
+
+// GET  /api/log/modules  -> lists every module and whether it is being logged
+// POST /api/log/modules  -> { "module": "HTTP", "enabled": false }
+//
+// Switching a module off drops its lines at the source: they are never
+// written to the log file. This is how a chatty module is kept from burying
+// the others in the tail view.
+func (s *Server) handleLogModules(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, http.StatusOK, map[string]any{"modules": logger.Modules()})
+	case http.MethodPost:
+		var body struct {
+			Module  string `json:"module"`
+			Enabled *bool  `json:"enabled"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
+			return
+		}
+		if strings.TrimSpace(body.Module) == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "module required"})
+			return
+		}
+		if body.Enabled == nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "enabled required"})
+			return
+		}
+		logger.SetEnabled(body.Module, *body.Enabled)
+		writeJSON(w, http.StatusOK, map[string]any{"modules": logger.Modules()})
+	default:
+		w.Header().Set("Allow", "GET, POST")
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
 }
 
 // --- Latency ---

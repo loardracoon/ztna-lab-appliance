@@ -198,14 +198,20 @@ func dispatchRemote(c *apiClient, line string) {
 		}
 
 	case "log":
-		if len(parts) >= 2 && parts[1] == "tail" {
+		switch {
+		case len(parts) >= 2 && parts[1] == "tail":
 			n := "50"
 			if len(parts) >= 3 {
 				n = parts[2]
 			}
 			printLog(c.call("GET", "/api/log/tail?n="+n, nil))
-		} else {
-			fmt.Println("usage: log tail [N]")
+		case len(parts) == 2 && parts[1] == "modules":
+			printRemoteModules(c.call("GET", "/api/log/modules", nil))
+		case len(parts) == 4 && parts[1] == "module" && (parts[3] == "on" || parts[3] == "off"):
+			printRemoteModules(c.call("POST", "/api/log/modules",
+				map[string]any{"module": parts[2], "enabled": parts[3] == "on"}))
+		default:
+			fmt.Println("usage: log tail [N] | log modules | log module <NAME> on|off")
 		}
 
 	case "latency":
@@ -236,6 +242,8 @@ func dispatchRemote(c *apiClient, line string) {
   http start | stop                 control the HTTP test server (port 80)
   ssh start | stop | who            control SSH and list sessions
   log tail [N]                      last N lines of the log
+  log modules                       per-module logging state
+  log module <NAME> on|off          stop/resume logging a module entirely
   latency run <url> [count] [ms]    latency test
   clear                             clear the screen
   exit                              leave the CLI (the daemon keeps running)`)
@@ -276,6 +284,30 @@ func printDNSList(out map[string]any, err error) {
 		for n, v := range cn {
 			fmt.Printf("%-7s %-40s %v\n", "CNAME", n, v)
 		}
+	}
+	fmt.Println()
+}
+
+// printRemoteModules renders the per-module logging switches returned by the API.
+// "off" means the module's lines are dropped at the source on the daemon,
+// not merely hidden from this view.
+func printRemoteModules(out map[string]any, err error) {
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "✗", err)
+		return
+	}
+	mods, _ := out["modules"].([]any)
+	fmt.Println()
+	for _, raw := range mods {
+		m, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		state := "off"
+		if on, _ := m["enabled"].(bool); on {
+			state = "on"
+		}
+		fmt.Printf("  %-6v %s\n", m["module"], state)
 	}
 	fmt.Println()
 }

@@ -43,11 +43,22 @@
   #dns-table td:last-child button { margin-left: 0; padding: 2px 6px; }
   .log { background: #010409; padding: 12px; border-radius: 4px; font-size: 11px;
          max-height: 320px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; }
-  .log .DNS { color: #79c0ff; }
-  .log .HTTP { color: #7ee787; }
-  .log .SSH { color: #d2a8ff; }
-  .log .SYS { color: #e3b341; }
-  .log .ADM { color: #ff7b72; }
+  /* One colour per module, shared by the log lines and the module switches. */
+  .c-DNS  { color: #79c0ff; }
+  .c-HTTP { color: #7ee787; }
+  .c-SSH  { color: #d2a8ff; }
+  .c-SYS  { color: #e3b341; }
+  .c-ADM  { color: #ff7b72; }
+  .modules { display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+             margin: 0 0 10px; font-size: 11px; color: #8b949e; }
+  .mod { border: 1px solid currentColor; background: transparent; padding: 2px 9px;
+         border-radius: 10px; font: inherit; font-size: 11px; font-weight: 600;
+         cursor: pointer; margin: 0; letter-spacing: 0.5px; }
+  .mod:hover { background: #21262d; }
+  .mod .st { opacity: 0.75; font-weight: 400; margin-left: 5px; }
+  /* Off means the module is not written to the log at all, not merely hidden. */
+  .mod.off { color: #6e7681; border-color: #30363d; text-decoration: line-through; }
+  .mod.off .st { text-decoration: none; }
   .log-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
                  margin: -4px 0 10px; font-size: 11px; color: #8b949e; }
   .log-toolbar .spacer { flex: 1; }
@@ -91,6 +102,11 @@
 
   <div class="card" style="grid-column: 1/-1;">
     <h2>Log</h2>
+    <div class="modules">
+      <span>debug:</span>
+      <span id="log-modules" style="display:contents"></span>
+      <span class="muted" style="margin-left:4px">off = the module stops writing to the log entirely</span>
+    </div>
     <div class="log-toolbar">
       <span class="dot" id="log-dot"></span>
       <span id="log-state">live</span>
@@ -252,6 +268,32 @@ function toggleLogPause() {
   }
 }
 
+// The module switches are server-side: turning one off stops those lines
+// being written at all, which is what keeps a chatty module (HTTP logs every
+// request on the test plane) from burying SSH and DNS in the tail window.
+function renderModules(modules) {
+  if (!modules) return;
+  document.getElementById('log-modules').innerHTML = modules.map(m => `
+    <button class="mod c-${m.module} ${m.enabled ? '' : 'off'}"
+            data-mod="${escapeHTML(m.module)}" data-on="${m.enabled ? '1' : '0'}"
+            title="${m.enabled ? 'Stop writing ' + escapeHTML(m.module) + ' lines to the log'
+                               : 'Resume writing ' + escapeHTML(m.module) + ' lines to the log'}"
+      >${escapeHTML(m.module)}<span class="st">${m.enabled ? 'on' : 'off'}</span></button>`).join('');
+}
+
+document.getElementById('log-modules').addEventListener('click', async e => {
+  const btn = e.target.closest('button[data-mod]');
+  if (!btn) return;
+  try {
+    const r = await api('/api/log/modules', {
+      method: 'POST',
+      body: JSON.stringify({ module: btn.dataset.mod, enabled: btn.dataset.on !== '1' }),
+    });
+    renderModules(r.modules);
+    loadLog();
+  } catch (err) { alert(err.message); }
+});
+
 function fmtBytes(n) {
   if (!n && n !== 0) return '—';
   if (n < 1024) return n + ' B';
@@ -280,10 +322,12 @@ async function loadLog() {
   const html = (r.lines || []).map(line => {
     const m = line.match(/\[(\w+)\s*\]/);
     const cls = m ? m[1].trim() : '';
-    return `<span class="${cls}">${escapeHTML(line)}</span>`;
+    return `<span class="${cls ? 'c-' + cls : ''}">${escapeHTML(line)}</span>`;
   }).join('\n');
   box.innerHTML = html || '<span class="muted">no entries</span>';
   if (stick) box.scrollTop = box.scrollHeight;
+
+  renderModules(r.modules);
 
   const f = r.file || {};
   const pct = f.max_lines ? Math.round((f.lines / f.max_lines) * 100) : 0;
