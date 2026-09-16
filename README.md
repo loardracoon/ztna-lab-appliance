@@ -1,6 +1,6 @@
 # ZTNA Lab Appliance
 
-A self-contained data-plane validation toolkit for ZTNA (Zero Trust Network Access) gateways. It provides four test surfaces — HTTP inspector, recursive DNS, mock SSH, and latency probe — plus a separate management plane with a REST API, web UI, and remote CLI. All in a single Go binary, deployable as a Docker container or a bare-metal service.
+A self-contained data-plane validation toolkit for ZTNA (Zero Trust Network Access) gateways. It provides four test surfaces — HTTP inspector, recursive DNS, mock SSH, and latency probe — plus a separate management plane with a REST API, web UI, and remote CLI. It also ships a Sophos Firewall policy optimizer, which reviews a rule base over the vendor's REST API and cleans it up on request. All in a single Go binary, deployable as a Docker container or a bare-metal service.
 
 ## Why this exists
 
@@ -43,6 +43,7 @@ Standing up separate servers for each of these is tedious. ZTNA Lab bundles them
 | Admin REST API | `:9000` — start/stop services, manage DNS records, tail logs, run latency, toggle SSH debug mode. Optional bearer-token auth. |
 | Web UI | Same port, browser-accessible dashboard at `http://<host>:9000`. |
 | CLI | `ztna-lab cli` — REPL that speaks to the Admin API. Same commands whether you run it on the host or `exec` into the container. |
+| Firewall policy optimizer | `ztna-lab fwopt` — reviews a Sophos Firewall rule base over the Firewall Configuration REST API and, on request, applies the fixes. Points at a firewall, not at this appliance. See [docs/SOPHOS-FWOPT.md](docs/SOPHOS-FWOPT.md). |
 
 ### HTTP Inspector endpoints
 
@@ -232,6 +233,50 @@ ztna> latency run http://10.0.0.1 50 200  # 50 probes, 200 ms apart
 ztna> exit
 ```
 
+### Sophos firewall policy optimizer
+
+`ztna-lab fwopt` is a standalone tool inside the same binary. It talks to a
+Sophos Firewall's [Firewall Configuration REST API](https://docs.sophos.com/nsg/sophos-firewall/rest-api/),
+not to this appliance, and it is read-only unless you pass `-apply`.
+
+```bash
+export SOPHOS_FW_HOST=10.0.0.1:4444      # address and WebAdmin port
+export SOPHOS_FW_API_KEY='…'             # bearer token generated on the firewall
+
+# Review. Nothing is written.
+ztna-lab fwopt -insecure
+
+# Keep a copy and work against it offline.
+ztna-lab fwopt -insecure -save rules.json
+ztna-lab fwopt -in rules.json -format json -out review.json
+
+# Apply only the fixes that cannot change what the firewall forwards.
+ztna-lab fwopt -insecure -apply -allow log,merge
+```
+
+It reports:
+
+| Check | What it means |
+|---|---|
+| `shadowed` | An earlier rule already matches this traffic and does something else with it — the rule never evaluates, so its policy is not in force. Never deleted automatically; the offered fix is to promote it above the rule hiding it |
+| `permissive` | `accept` from any source to any destination on any service |
+| `redundant` / `duplicate` | Already covered by an earlier rule that treats the traffic the same way |
+| `mergeable` | Two adjacent rules that could be one |
+| `broad-service` | `accept` with no service restriction |
+| `no-inspection` | `accept` with no IPS, web, application policy or scanning |
+| `no-logging` | `logTraffic` off, so matches never reach the log |
+| `disabled` | Switched off, still in the rule base |
+
+Applying is opt-in twice over: `-apply` sends the plan, and `-allow` decides
+which operations it may use (`log`, `disable`, `move`, `merge`, `delete`; the
+default is `log` alone). Every run that writes takes a `0600` backup of the
+whole rule base first and asks for confirmation unless given `-yes`.
+`-prefer-disable` turns every deletion into a disable, so a cleanup can be
+reviewed on the firewall before anything is really removed.
+
+Full reference, including how coverage is decided and what the tool
+deliberately will not conclude: **[docs/SOPHOS-FWOPT.md](docs/SOPHOS-FWOPT.md)**.
+
 ### Admin REST API
 
 All endpoints require `Authorization: Bearer <token>` when `ZTNA_ADMIN_TOKEN` is set.
@@ -292,6 +337,9 @@ All settings are environment variables. Docker reads them from `docker-compose.y
 | `ZTNA_LOG_MAX_BYTES` | `10485760` | Recycle the log file once it reaches this many bytes. Whichever limit is hit first wins. |
 | `ZTNA_LOG_DISABLED_MODULES` | *(empty)* | Comma-separated modules to start with logging switched off, e.g. `HTTP,DNS`. Toggle at runtime from the admin panel, the CLI, or `POST /api/log/modules`. |
 | `ZTNA_ADMIN_URL` | `http://127.0.0.1:9000` | Used by `ztna-lab cli` to locate the daemon |
+| `SOPHOS_FW_HOST` | *(empty)* | `ztna-lab fwopt`: firewall address and WebAdmin port, e.g. `10.0.0.1:4444` |
+| `SOPHOS_FW_API_KEY` | *(empty)* | `ztna-lab fwopt`: API key, sent as a bearer token |
+| `SOPHOS_FW_INSECURE` | `false` | `ztna-lab fwopt`: skip TLS verification (needed for the default self-signed WebAdmin certificate) |
 
 To protect the Admin API with authentication, generate a token and set it before starting:
 
@@ -311,6 +359,7 @@ openssl rand -hex 32   # copy the output into ZTNA_ADMIN_TOKEN
 ├── main.go                        Interactive REPL (local mode) + latency runner
 ├── main_appliance.go              Daemon entrypoint, subcommand routing
 ├── cli_client.go                  Remote CLI (ztna-lab cli subcommand)
+├── fwopt.go                       Sophos policy optimizer CLI (ztna-lab fwopt subcommand)
 │
 ├── admin/
 │   ├── server.go                  Admin REST API (all /api/* routes)
@@ -332,6 +381,18 @@ openssl rand -hex 32   # copy the output into ZTNA_ADMIN_TOKEN
 │
 ├── logger/
 │   └── logger.go                  Shared logger: stdout + file, per-module switches, line- and size-based recycling
+│
+├── sophos/                        Sophos Firewall policy optimization engine
+│   ├── types.go                   IPv4 rule model (Firewall Configuration API schema)
+│   ├── client.go                  REST client: list, get, create, update, delete, move
+│   ├── coverage.go                Set semantics — does rule A cover rule B?
+│   ├── analyzer.go                The checks and the findings they produce
+│   ├── plan.go                    Findings to API calls, conflict resolution, apply
+│   └── report.go                  Text and JSON rendering
+│
+├── docs/
+│   ├── APPLIANCE.md               Appliance internals
+│   └── SOPHOS-FWOPT.md            Firewall policy optimizer reference
 │
 └── deployments/
     ├── docker/

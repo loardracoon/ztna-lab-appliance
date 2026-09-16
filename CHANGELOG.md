@@ -1,5 +1,44 @@
 # Changelog
 
+## v1.7 — Sophos firewall policy optimization
+
+* **New `ztna-lab fwopt` subcommand: a policy optimizer for Sophos Firewall.**
+  It reads the IPv4 rule base over the vendor's Firewall Configuration REST API
+  (`/api/firewall-config/v1`, bearer API key) and reports what is dead,
+  duplicated, over-broad or invisible to the log. Nine checks: `shadowed`,
+  `permissive`, `redundant`, `duplicate`, `mergeable`, `broad-service`,
+  `no-inspection`, `no-logging` and `disabled`.
+* **Read-only by default.** Nothing is written without `-apply`, and `-apply`
+  only performs the operations named in `-allow` — `log`, `disable`, `move`,
+  `merge`, `delete`, defaulting to `log` alone, the one fix that cannot change
+  what crosses the firewall. Every writing run takes a `0600` backup of the
+  whole rule base first and stops at the first failure.
+* **`-prefer-disable` turns every deletion into a disable**, so a cleanup can
+  sit on the firewall and be reviewed — or reversed — before anything is really
+  removed.
+* **A shadowed rule is never deleted automatically**, not even under
+  `-allow all`. Its only offered fix is promotion above the rule hiding it:
+  a shadowed rule does something the rule above it does not, and removing it
+  would erase a policy somebody wrote on purpose along with the evidence that
+  it is not working. Deletions are offered on redundant, duplicate and disabled
+  rules, which are dead already.
+* **Coverage analysis errs towards silence.** Rules reference networks and
+  services by name, so the analyzer compares name sets, which proves coverage
+  but cannot see that two differently named objects hold the same subnet. It
+  refuses to claim coverage at all when the covering rule carries an exclusion,
+  a schedule, a user restriction or a Security Heartbeat requirement that the
+  covered rule does not. Missing a finding costs nothing; inventing one costs a
+  live rule.
+* **`-fail-on` exits 3** when findings reach a severity, so a pipeline can tell
+  a broken tool (exit 1) from a failing rule base.
+* **`-save` / `-in` work offline.** Dump a rule base, review it later, diff two
+  dumps; the API's `{"items": […]}` envelope is accepted as input too.
+* `-format json` for the whole report, plan included. `SOPHOS_FW_HOST`,
+  `SOPHOS_FW_API_KEY` and `SOPHOS_FW_INSECURE` keep keys off the command line.
+* New `sophos/` package carrying the client, the analysis engine and the
+  planner, with no dependency on the rest of the appliance. Full reference in
+  [docs/SOPHOS-FWOPT.md](docs/SOPHOS-FWOPT.md).
+
 ## v1.6 — Re-deploy always builds the latest main
 
 * **`setup.sh` is now a re-deploy tool.** Each run synchronizes
