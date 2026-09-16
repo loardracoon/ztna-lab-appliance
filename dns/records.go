@@ -114,10 +114,10 @@ func ListRecords() (a map[string]string, cname map[string]string) {
 func AddA(name, ip string) error {
 	name = strings.ToLower(strings.TrimSuffix(name, "."))
 	if name == "" {
-		return fmt.Errorf("name vazio")
+		return fmt.Errorf("name is required")
 	}
 	if net.ParseIP(ip) == nil {
-		return fmt.Errorf("ip inválido: %q", ip)
+		return fmt.Errorf("invalid ip: %q", ip)
 	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
@@ -136,10 +136,10 @@ func AddCNAME(alias, target string) error {
 	alias = strings.ToLower(strings.TrimSuffix(alias, "."))
 	target = strings.ToLower(strings.TrimSuffix(target, "."))
 	if alias == "" || target == "" {
-		return fmt.Errorf("alias e target são obrigatórios")
+		return fmt.Errorf("alias and target are required")
 	}
 	if alias == target {
-		return fmt.Errorf("alias e target não podem ser iguais")
+		return fmt.Errorf("alias and target cannot be the same")
 	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
@@ -160,7 +160,7 @@ func Remove(name string) error {
 	_, hadA := store.A[name]
 	_, hadC := store.CNAME[name]
 	if !hadA && !hadC {
-		return fmt.Errorf("registro %q não encontrado", name)
+		return fmt.Errorf("record %q not found", name)
 	}
 	delete(store.A, name)
 	delete(store.CNAME, name)

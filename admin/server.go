@@ -1,13 +1,13 @@
-// Package admin expõe a API HTTP de gerenciamento do appliance ZTNA Lab.
+// Package admin exposes the HTTP management API of the ZTNA Lab appliance.
 //
-// A API é separada do plano de teste (porta 80). Aqui ficam:
-//   - controle de start/stop dos servidores DNS, HTTP e SSH
-//   - CRUD de registros DNS (A e CNAME)
-//   - leitura de status, sessões SSH e tail de log
-//   - execução do latency runner
+// The API is separate from the test plane (port 80). It provides:
+//   - start/stop control of the DNS, HTTP and SSH servers
+//   - CRUD of DNS records (A and CNAME)
+//   - status, SSH sessions and log tail
+//   - the latency runner
 //
-// Autenticação opcional via header "Authorization: Bearer <token>",
-// configurada por ZTNA_ADMIN_TOKEN. Se vazio, a API fica aberta (modo lab).
+// Authentication is optional, via the "Authorization: Bearer <token>" header
+// configured by ZTNA_ADMIN_TOKEN. When empty the API is open (lab mode).
 package admin
 
 import (
@@ -30,8 +30,8 @@ import (
 //go:embed ui.html
 var indexHTML []byte
 
-// Server é a API de gerenciamento. Mantém referências aos servidores
-// rodando para start/stop e consulta de estado.
+// Server is the management API. It keeps references to the running
+// servers so it can start/stop them and report their state.
 type Server struct {
 	addr  string
 	token string
@@ -43,8 +43,8 @@ type Server struct {
 	httpServer *http.Server
 }
 
-// New constrói o servidor. addr é "host:port" (ex.: "0.0.0.0:9000").
-// token vazio desativa autenticação.
+// New builds the server. addr is "host:port" (e.g. "0.0.0.0:9000").
+// An empty token disables authentication.
 func New(addr, token string, dnsSrv *dns.Server, httpSrv *httpd.Server, sshSrv *sshd.Server) *Server {
 	return &Server{
 		addr:    addr,
@@ -55,14 +55,14 @@ func New(addr, token string, dnsSrv *dns.Server, httpSrv *httpd.Server, sshSrv *
 	}
 }
 
-// Start sobe a API. Não bloqueia.
+// Start brings the API up. It does not block.
 func (s *Server) Start() error {
 	mux := http.NewServeMux()
 
-	// UI estática
+	// Static UI
 	mux.HandleFunc("/", s.handleIndex)
 
-	// API JSON
+	// JSON API
 	mux.HandleFunc("/api/status", s.auth(s.handleStatus))
 	mux.HandleFunc("/api/dns/start", s.auth(s.handleDNSStart))
 	mux.HandleFunc("/api/dns/stop", s.auth(s.handleDNSStop))
@@ -76,7 +76,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/ssh/debug", s.auth(s.handleSSHDebug))
 	mux.HandleFunc("/api/log/tail", s.auth(s.handleLogTail))
 	mux.HandleFunc("/api/latency", s.auth(s.handleLatency))
-	mux.HandleFunc("/api/health", s.handleHealth) // sem auth: usado por healthcheck
+	mux.HandleFunc("/api/health", s.handleHealth) // no auth: used by the healthcheck
 
 	s.httpServer = &http.Server{
 		Addr:              s.addr,
@@ -93,7 +93,7 @@ func (s *Server) Start() error {
 	return nil
 }
 
-// Stop encerra a API com grace period.
+// Stop shuts the API down with a grace period.
 func (s *Server) Stop() error {
 	if s.httpServer == nil {
 		return nil
@@ -142,9 +142,9 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"dns":  map[string]any{"running": s.dnsSrv != nil && s.dnsSrv.IsRunning(), "port": 53},
-		"http": map[string]any{"running": s.httpSrv != nil && s.httpSrv.IsRunning(), "port": 80},
-		"ssh":  map[string]any{"running": s.sshSrv != nil && s.sshSrv.IsRunning(), "port": 2222, "debug": s.sshSrv != nil && s.sshSrv.IsDebug()},
+		"dns":     map[string]any{"running": s.dnsSrv != nil && s.dnsSrv.IsRunning(), "port": 53},
+		"http":    map[string]any{"running": s.httpSrv != nil && s.httpSrv.IsRunning(), "port": 80},
+		"ssh":     map[string]any{"running": s.sshSrv != nil && s.sshSrv.IsRunning(), "port": 2222, "debug": s.sshSrv != nil && s.sshSrv.IsDebug()},
 		"version": "appliance-1.0",
 	})
 }
@@ -167,8 +167,8 @@ func (s *Server) handleDNSStop(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "stopped"})
 }
 
-// GET  /api/dns/records         → lista A e CNAME
-// POST /api/dns/records         → adiciona { "type": "A|CNAME", "name": "...", "value": "..." }
+// GET  /api/dns/records         -> lists A and CNAME records
+// POST /api/dns/records         -> adds { "type": "A|CNAME", "name": "...", "value": "..." }
 func (s *Server) handleDNSRecords(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
@@ -295,16 +295,22 @@ func (s *Server) handleLogTail(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"lines": lines})
+	st := logger.Stat()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"lines":       lines,
+		"count":       len(lines),
+		"server_time": time.Now().Format("15:04:05"),
+		"file":        st,
+	})
 }
 
 // --- Latency ---
 
 func (s *Server) handleLatency(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		URL      string `json:"url"`
-		Count    int    `json:"count"`
-		IntervalMs int  `json:"interval_ms"`
+		URL        string `json:"url"`
+		Count      int    `json:"count"`
+		IntervalMs int    `json:"interval_ms"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
@@ -316,9 +322,6 @@ func (s *Server) handleLatency(w http.ResponseWriter, r *http.Request) {
 	if body.IntervalMs == 0 {
 		body.IntervalMs = 200
 	}
-	// Reaproveita a função do main.go. Assinatura assumida:
-	//   func RunLatency(url string, count int, interval time.Duration) (LatencyResult, error)
-	// Ajustar o import se a função estiver em outro pacote.
 	res, err := runLatency(body.URL, body.Count, time.Duration(body.IntervalMs)*time.Millisecond)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -331,6 +334,10 @@ func (s *Server) handleLatency(w http.ResponseWriter, r *http.Request) {
 
 func writeJSON(w http.ResponseWriter, status int, body any) {
 	w.Header().Set("Content-Type", "application/json")
+	// The panel polls these endpoints on a timer; a cached response would
+	// freeze the log view and the status pills at their first value.
+	w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate")
+	w.Header().Set("Pragma", "no-cache")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(body)
 }

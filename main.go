@@ -1,11 +1,11 @@
-// main.go — REPL interativo e ferramenta de latência.
+// main.go — interactive REPL and latency tool.
 //
-// IMPORTANTE: a função main() do binário vive em main_appliance.go.
-// Este arquivo expõe:
-//   - runREPL()  — REPL com readline, chamado quando o binário é executado
-//                  sem subcomando e em ambiente TTY
-//   - runLatency() — ferramenta de latência, chamada tanto pelo REPL quanto
-//                    pela Admin API (via runLatencyAPI em main_appliance.go)
+// IMPORTANT: the binary's main() lives in main_appliance.go.
+// This file exposes:
+//   - runREPL()    — readline REPL, used when the binary runs without a
+//     subcommand on a TTY
+//   - runLatency() — latency tool, called both by the REPL and by the
+//     Admin API (through runLatencyAPI in main_appliance.go)
 package main
 
 import (
@@ -27,21 +27,21 @@ import (
 	"ztna-lab/sshd"
 )
 
-// Estado global do REPL: instâncias dos servidores manipulados pelos
-// comandos. Diferente do daemon (que mantém suas próprias referências),
-// o REPL local cria e gerencia as suas.
+// REPL global state: the server instances the commands act on. Unlike the
+// daemon (which keeps its own references), the local REPL creates and
+// manages its own.
 var (
 	replDNS  *dns.Server
 	replHTTP *httpd.Server
 	replSSH  *sshd.Server
 )
 
-// runREPL é o entrypoint do shell interativo local (modo legado).
-// Nota: o uso recomendado em produção é `ztna-lab daemon` + `ztna-lab cli`.
-// O REPL local cria os servidores nele mesmo, sem passar pela Admin API.
+// runREPL is the entrypoint of the local interactive shell (legacy mode).
+// Note: the recommended production usage is `ztna-lab daemon` + `ztna-lab cli`.
+// The local REPL creates the servers in-process, bypassing the Admin API.
 func runREPL() {
-	// Inicializa instâncias dos servidores. Paths vêm de env vars (mesmos
-	// usados pelo daemon), com defaults pra uso local.
+	// Build the server instances. Paths come from the same env vars the
+	// daemon uses, with defaults suited to local runs.
 	dnsPath := envDefault("ZTNA_DNS_RECORDS", "dns_records.json")
 
 	sshCfg := sshd.ConfigFromEnv()
@@ -67,8 +67,8 @@ func runREPL() {
 	}
 	defer rl.Close()
 
-	fmt.Println("ZTNA Lab v2.0 (modo REPL local)")
-	fmt.Println("Digite 'help' para ver os comandos. 'daemon' inicia o modo appliance.")
+	fmt.Println("ZTNA Lab v2.0 (local REPL mode)")
+	fmt.Println("Type 'help' to list the commands. 'daemon' starts appliance mode.")
 	fmt.Println()
 
 	for {
@@ -86,7 +86,7 @@ func runREPL() {
 		dispatchLocal(line)
 	}
 
-	// shutdown best-effort
+	// best-effort shutdown
 	if replDNS.IsRunning() {
 		_ = replDNS.Stop()
 	}
@@ -98,8 +98,8 @@ func runREPL() {
 	}
 }
 
-// dispatchLocal processa um comando do REPL local (acessando diretamente
-// os pacotes, sem HTTP).
+// dispatchLocal handles a local REPL command, calling the packages
+// directly instead of going through HTTP.
 func dispatchLocal(line string) {
 	parts := strings.Fields(line)
 	if len(parts) == 0 {
@@ -115,7 +115,7 @@ func dispatchLocal(line string) {
 
 	case "dns":
 		if len(parts) < 2 {
-			fmt.Println("uso: dns [start|stop|list|add|remove|cname]")
+			fmt.Println("usage: dns [start|stop|list|add|remove|cname]")
 			return
 		}
 		switch parts[1] {
@@ -128,13 +128,13 @@ func dispatchLocal(line string) {
 			printRecords(a, c)
 		case "add":
 			if len(parts) != 4 {
-				fmt.Println("uso: dns add <nome> <ip>")
+				fmt.Println("usage: dns add <name> <ip>")
 				return
 			}
 			report(dns.AddA(parts[2], parts[3]))
 		case "remove":
 			if len(parts) != 3 {
-				fmt.Println("uso: dns remove <nome>")
+				fmt.Println("usage: dns remove <name>")
 				return
 			}
 			report(dns.Remove(parts[2]))
@@ -142,15 +142,15 @@ func dispatchLocal(line string) {
 			if len(parts) == 5 && parts[2] == "add" {
 				report(dns.AddCNAME(parts[3], parts[4]))
 			} else {
-				fmt.Println("uso: dns cname add <alias> <alvo>")
+				fmt.Println("usage: dns cname add <alias> <target>")
 			}
 		default:
-			fmt.Println("subcomando dns desconhecido")
+			fmt.Println("unknown dns subcommand")
 		}
 
 	case "http":
 		if len(parts) != 2 {
-			fmt.Println("uso: http [start|stop]")
+			fmt.Println("usage: http [start|stop]")
 			return
 		}
 		if parts[1] == "start" {
@@ -158,12 +158,12 @@ func dispatchLocal(line string) {
 		} else if parts[1] == "stop" {
 			report(replHTTP.Stop())
 		} else {
-			fmt.Println("uso: http [start|stop]")
+			fmt.Println("usage: http [start|stop]")
 		}
 
 	case "ssh":
 		if len(parts) < 2 {
-			fmt.Println("uso: ssh [start|stop|who]")
+			fmt.Println("usage: ssh [start|stop|who]")
 			return
 		}
 		switch parts[1] {
@@ -179,7 +179,11 @@ func dispatchLocal(line string) {
 		}
 
 	case "log":
-		if len(parts) >= 2 && parts[1] == "tail" {
+		if len(parts) < 2 || parts[1] != "tail" {
+			fmt.Println("usage: log tail [N]")
+			return
+		}
+		{
 			n := 50
 			if len(parts) >= 3 {
 				if v, err := strconv.Atoi(parts[2]); err == nil {
@@ -188,7 +192,7 @@ func dispatchLocal(line string) {
 			}
 			lines, err := logger.Tail(n)
 			if err != nil {
-				fmt.Println("erro:", err)
+				fmt.Println("error:", err)
 				return
 			}
 			for _, l := range lines {
@@ -198,7 +202,7 @@ func dispatchLocal(line string) {
 
 	case "latency":
 		if len(parts) < 3 || parts[1] != "run" {
-			fmt.Println("uso: latency run <url> [count] [interval_ms]")
+			fmt.Println("usage: latency run <url> [count] [interval_ms]")
 			return
 		}
 		count := 50
@@ -215,7 +219,7 @@ func dispatchLocal(line string) {
 		}
 		res, err := runLatency(parts[2], count, interval)
 		if err != nil {
-			fmt.Println("erro:", err)
+			fmt.Println("error:", err)
 			return
 		}
 		printLatency(res)
@@ -224,28 +228,28 @@ func dispatchLocal(line string) {
 		fmt.Print("\033[2J\033[H")
 
 	case "help":
-		fmt.Println(`Comandos do REPL:
-  status                            estado dos servidores locais
-  dns start | stop                  controle do DNS
-  dns list                          lista registros A e CNAME
-  dns add <nome> <ip>               adiciona registro A
-  dns remove <nome>                 remove registro
-  dns cname add <alias> <alvo>      adiciona CNAME
-  http start | stop                 controle do HTTP test (porta 80)
-  ssh start | stop | who            controle do SSH e sessões
-  log tail [N]                      últimas N linhas do log
-  latency run <url> [count] [ms]    teste de latência
-  clear                             limpa a tela
-  exit                              sai (encerra os servidores locais)`)
+		fmt.Println(`REPL commands:
+  status                            state of the local servers
+  dns start | stop                  control the DNS server
+  dns list                          list A and CNAME records
+  dns add <name> <ip>               add an A record
+  dns remove <name>                 remove a record
+  dns cname add <alias> <target>    add a CNAME record
+  http start | stop                 control the HTTP test server (port 80)
+  ssh start | stop | who            control SSH and list sessions
+  log tail [N]                      last N lines of the log
+  latency run <url> [count] [ms]    latency test
+  clear                             clear the screen
+  exit                              quit (stops the local servers)`)
 
 	default:
-		fmt.Printf("comando desconhecido: %s (digite 'help')\n", parts[0])
+		fmt.Printf("unknown command: %s (type 'help')\n", parts[0])
 	}
 }
 
 // ─────────────────────── latency ───────────────────────
 
-// LatencyResult espelha o que a Admin API expõe via JSON.
+// LatencyResult mirrors what the Admin API exposes as JSON.
 type LatencyResult struct {
 	URL     string
 	Total   int
@@ -260,9 +264,9 @@ type LatencyResult struct {
 	Verdict string
 }
 
-// runLatency dispara `count` requisições GET para `url`, medindo o tempo
-// total de cada uma. Não usa keep-alive (cada requisição abre conexão
-// nova) — mais fiel pra teste de latência ponta-a-ponta.
+// runLatency fires `count` GET requests at `url`, measuring the total time
+// of each one. Keep-alive is disabled (every request opens a new
+// connection), which is truer to an end-to-end latency test.
 func runLatency(url string, count int, interval time.Duration) (LatencyResult, error) {
 	if count <= 0 {
 		count = 50
@@ -271,7 +275,7 @@ func runLatency(url string, count int, interval time.Duration) (LatencyResult, e
 		interval = 200 * time.Millisecond
 	}
 	if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
-		return LatencyResult{}, fmt.Errorf("url deve começar com http:// ou https://")
+		return LatencyResult{}, fmt.Errorf("url must start with http:// or https://")
 	}
 
 	client := &http.Client{
@@ -317,7 +321,7 @@ func runLatency(url string, count int, interval time.Duration) (LatencyResult, e
 	}
 	avg := sum / time.Duration(len(samples))
 
-	// jitter = stddev
+	// jitter = standard deviation
 	var sqSum float64
 	for _, s := range samples {
 		d := float64(s - avg)
@@ -400,7 +404,7 @@ func report(err error) {
 }
 
 func printRecords(a, c map[string]string) {
-	fmt.Printf("\n  %-7s %-40s %s\n", "TIPO", "NOME", "VALOR")
+	fmt.Printf("\n  %-7s %-40s %s\n", "TYPE", "NAME", "VALUE")
 	fmt.Println("  ", strings.Repeat("─", 78))
 	for n, v := range a {
 		fmt.Printf("  %-7s %-40s %s\n", "A", n, v)

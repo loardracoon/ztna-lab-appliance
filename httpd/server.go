@@ -49,7 +49,7 @@ func (s *Server) Start() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.running {
-		return fmt.Errorf("HTTP já está rodando")
+		return fmt.Errorf("HTTP server is already running")
 	}
 
 	mux := http.NewServeMux()
@@ -69,7 +69,7 @@ func (s *Server) Start() error {
 	ln, err := net.Listen("tcp", s.addr)
 	if err != nil {
 		s.srv = nil
-		return fmt.Errorf("falha ao bindar %s: %w", s.addr, err)
+		return fmt.Errorf("could not bind %s: %w", s.addr, err)
 	}
 
 	go func() {
@@ -86,7 +86,7 @@ func (s *Server) Stop() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.running {
-		return fmt.Errorf("HTTP não está rodando")
+		return fmt.Errorf("HTTP server is not running")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

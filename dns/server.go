@@ -43,7 +43,7 @@ func (s *Server) Start() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.running {
-		return fmt.Errorf("DNS já está rodando")
+		return fmt.Errorf("DNS server is already running")
 	}
 
 	mux := mdns.NewServeMux()
@@ -65,7 +65,7 @@ func (s *Server) Start() error {
 	select {
 	case err := <-errCh:
 		s.srv = nil
-		return fmt.Errorf("falha ao iniciar DNS: %w", err)
+		return fmt.Errorf("could not start DNS: %w", err)
 	case <-time.After(200 * time.Millisecond):
 	}
 
@@ -79,7 +79,7 @@ func (s *Server) Stop() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.running {
-		return fmt.Errorf("DNS não está rodando")
+		return fmt.Errorf("DNS server is not running")
 	}
 	if err := s.srv.Shutdown(); err != nil {
 		return err
