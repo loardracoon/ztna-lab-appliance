@@ -179,8 +179,21 @@ func dispatchLocal(line string) {
 		}
 
 	case "log":
+		if len(parts) >= 2 && parts[1] == "modules" {
+			printModules(logger.Modules())
+			return
+		}
+		if len(parts) >= 2 && parts[1] == "module" {
+			if len(parts) != 4 || (parts[3] != "on" && parts[3] != "off") {
+				fmt.Println("usage: log module <NAME> on|off")
+				return
+			}
+			logger.SetEnabled(parts[2], parts[3] == "on")
+			printModules(logger.Modules())
+			return
+		}
 		if len(parts) < 2 || parts[1] != "tail" {
-			fmt.Println("usage: log tail [N]")
+			fmt.Println("usage: log tail [N] | log modules | log module <NAME> on|off")
 			return
 		}
 		{
@@ -238,6 +251,8 @@ func dispatchLocal(line string) {
   http start | stop                 control the HTTP test server (port 80)
   ssh start | stop | who            control SSH and list sessions
   log tail [N]                      last N lines of the log
+  log modules                       per-module logging state
+  log module <NAME> on|off          stop/resume logging a module entirely
   latency run <url> [count] [ms]    latency test
   clear                             clear the screen
   exit                              quit (stops the local servers)`)
@@ -401,6 +416,20 @@ func report(err error) {
 		return
 	}
 	fmt.Println("✓ ok")
+}
+
+// printModules renders the per-module logging switches. "off" means the
+// module's lines are dropped at the source, not merely hidden from the view.
+func printModules(mods []logger.ModuleState) {
+	fmt.Println()
+	for _, m := range mods {
+		state := "off"
+		if m.Enabled {
+			state = "on"
+		}
+		fmt.Printf("  %-6s %s\n", m.Module, state)
+	}
+	fmt.Println()
 }
 
 func printRecords(a, c map[string]string) {

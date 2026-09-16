@@ -16,6 +16,7 @@ func reset(t *testing.T) string {
 		_ = file.Close()
 	}
 	file, curPath, written, lineCnt = nil, "", 0, 0
+	enabled = defaultModuleState()
 	mu.Unlock()
 	t.Cleanup(func() {
 		mu.Lock()
@@ -208,4 +209,155 @@ func TestTailWithoutAFileReportsAnError(t *testing.T) {
 	if _, err := Tail(10); err == nil {
 		t.Fatal("expected an error when no log file is open")
 	}
+}
+
+func TestDisabledModuleIsDroppedEntirely(t *testing.T) {
+	path := reset(t)
+	Init(path)
+
+	SetEnabled("HTTP", false)
+	for i := 0; i < 20; i++ {
+		Log("HTTP", fmt.Sprintf("request %d", i))
+	}
+	Log("SSH ", "session opened id=1")
+
+	lines, err := Tail(100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, l := range lines {
+		if strings.Contains(l, "[HTTP]") {
+			t.Fatalf("a disabled module still reached the log: %q", l)
+		}
+	}
+	if !containsLine(lines, "session opened id=1") {
+		t.Fatal("SSH line missing while HTTP was disabled")
+	}
+}
+
+func TestDisablingOneModuleKeepsTheOthersVisible(t *testing.T) {
+	path := reset(t)
+	Init(path)
+
+	// The reported symptom: HTTP logs every request on the test plane and
+	// pushes SSH out of the tail window.
+	Log("SSH ", "session opened id=1")
+	for i := 0; i < 200; i++ {
+		Log("HTTP", fmt.Sprintf("from=10.0.0.1 GET /health #%d", i))
+	}
+	if lines, _ := Tail(80); containsLine(lines, "session opened id=1") {
+		t.Fatal("precondition failed: SSH should have been pushed out of an 80-line window")
+	}
+
+	SetEnabled("HTTP", false)
+	Log("SSH ", "session opened id=2")
+	for i := 0; i < 200; i++ {
+		Log("HTTP", fmt.Sprintf("from=10.0.0.1 GET /health #%d", i))
+	}
+
+	lines, err := Tail(80)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsLine(lines, "session opened id=2") {
+		t.Fatal("SSH still buried after switching HTTP off")
+	}
+}
+
+func TestModuleToggleIsAlwaysRecorded(t *testing.T) {
+	path := reset(t)
+	Init(path)
+
+	// Even switching SYS off must leave a trace, otherwise a silent log is
+	// indistinguishable from a broken one.
+	SetEnabled("SYS", false)
+	lines, err := Tail(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsLine(lines, "log module SYS switched off") {
+		t.Fatalf("the switch-off was not recorded: %v", lines)
+	}
+	Log("SYS ", "this one must be dropped")
+	lines, _ = Tail(10)
+	if containsLine(lines, "this one must be dropped") {
+		t.Fatal("SYS lines still recorded after switching the module off")
+	}
+}
+
+func TestModulePaddingAndCaseAreNormalized(t *testing.T) {
+	path := reset(t)
+	Init(path)
+
+	SetEnabled("ssh", false) // call sites use "SSH " with padding
+	Log("SSH ", "should be dropped")
+	if lines, _ := Tail(20); containsLine(lines, "should be dropped") {
+		t.Fatal(`SetEnabled("ssh") did not match Log("SSH ")`)
+	}
+	if IsEnabled("SSH ") {
+		t.Fatal("IsEnabled disagrees with SetEnabled about the same module")
+	}
+}
+
+func TestUnknownModuleRegistersEnabled(t *testing.T) {
+	path := reset(t)
+	Init(path)
+
+	Log("GEO ", "lookup ok")
+	if lines, _ := Tail(20); !containsLine(lines, "lookup ok") {
+		t.Fatal("a new module should log by default")
+	}
+	found := false
+	for _, m := range Modules() {
+		if m.Module == "GEO" {
+			found, _ = true, m.Enabled
+			if !m.Enabled {
+				t.Fatal("a newly seen module should register as enabled")
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("new module missing from Modules(): %v", Modules())
+	}
+}
+
+func TestDisabledModulesEnvIsApplied(t *testing.T) {
+	path := reset(t)
+	t.Setenv("ZTNA_LOG_DISABLED_MODULES", "http, dns")
+	Init(path)
+
+	Log("HTTP", "nope")
+	Log("DNS ", "nope")
+	Log("SSH ", "yes")
+	lines, _ := Tail(20)
+	if containsLine(lines, "nope") {
+		t.Fatalf("ZTNA_LOG_DISABLED_MODULES ignored: %v", lines)
+	}
+	if !containsLine(lines, "yes") {
+		t.Fatal("ZTNA_LOG_DISABLED_MODULES disabled a module it should not have")
+	}
+}
+
+func TestModulesListsShippedModulesInOrder(t *testing.T) {
+	path := reset(t)
+	Init(path)
+
+	got := Modules()
+	if len(got) < len(knownModules) {
+		t.Fatalf("Modules() = %v, want at least the shipped modules", got)
+	}
+	for i, want := range knownModules {
+		if got[i].Module != want {
+			t.Fatalf("Modules()[%d] = %q, want %q", i, got[i].Module, want)
+		}
+	}
+}
+
+func containsLine(lines []string, substr string) bool {
+	for _, l := range lines {
+		if strings.Contains(l, substr) {
+			return true
+		}
+	}
+	return false
 }

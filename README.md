@@ -175,6 +175,8 @@ ztna> dns cname add www.lab app.lab     # add CNAME
 ztna> dns remove app.lab                # delete record
 ztna> ssh who                           # active SSH sessions
 ztna> log tail 100                      # last 100 log lines
+ztna> log modules                       # per-module logging state
+ztna> log module HTTP off               # stop logging HTTP entirely
 ztna> latency run http://10.0.0.1 50 200  # 50 probes, 200 ms apart
 ztna> exit
 ```
@@ -198,7 +200,9 @@ All endpoints require `Authorization: Bearer <token>` when `ZTNA_ADMIN_TOKEN` is
 | POST | `/api/ssh/stop` | Stop SSH server |
 | GET | `/api/ssh/sessions` | List active SSH sessions |
 | POST | `/api/ssh/debug` | Toggle SSH debug mode `{"enabled":true}` — no restart needed |
-| GET | `/api/log/tail?n=50` | Last N log lines, plus log file stats (path, size, line count, recycle limits) |
+| GET | `/api/log/tail?n=50` | Last N log lines, plus log file stats (path, size, line count, recycle limits) and per-module state |
+| GET | `/api/log/modules` | Per-module logging state |
+| POST | `/api/log/modules` | Switch a module's logging on/off `{"module":"HTTP","enabled":false}` |
 | POST | `/api/latency` | Run latency probe `{"url":"...","count":50,"interval_ms":200}` |
 
 Example:
@@ -235,6 +239,7 @@ All settings are environment variables. Docker reads them from `docker-compose.y
 | `ZTNA_LOG_PATH` | `/data/ztna_lab.log` | Log file path. The parent directory is created if missing; if the path cannot be opened the logger falls back to `<tmpdir>/ztna_lab.log` so the log view keeps working. |
 | `ZTNA_LOG_MAX_LINES` | `5000` | Recycle the log file once it reaches this many lines. |
 | `ZTNA_LOG_MAX_BYTES` | `10485760` | Recycle the log file once it reaches this many bytes. Whichever limit is hit first wins. |
+| `ZTNA_LOG_DISABLED_MODULES` | *(empty)* | Comma-separated modules to start with logging switched off, e.g. `HTTP,DNS`. Toggle at runtime from the admin panel, the CLI, or `POST /api/log/modules`. |
 | `ZTNA_ADMIN_URL` | `http://127.0.0.1:9000` | Used by `ztna-lab cli` to locate the daemon |
 
 To protect the Admin API with authentication, generate a token and set it before starting:
@@ -275,7 +280,7 @@ openssl rand -hex 32   # copy the output into ZTNA_ADMIN_TOKEN
 │   └── config.go                  Config struct + ConfigFromEnv()
 │
 ├── logger/
-│   └── logger.go                  Shared logger: stdout + file, line- and size-based recycling
+│   └── logger.go                  Shared logger: stdout + file, per-module switches, line- and size-based recycling
 │
 └── deployments/
     ├── docker/
