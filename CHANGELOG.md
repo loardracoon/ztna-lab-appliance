@@ -1,5 +1,36 @@
 # Changelog
 
+## v1.6 — Re-deploy always builds the latest main
+
+* **`setup.sh` is now a re-deploy tool.** Each run synchronizes
+  `/opt/ztna-lab-appliance` with the head of `origin/main` and rebuilds from
+  that exact commit. It hard-resets and `git clean -xfd`s the tree, so local
+  edits and a stale `dist/` from an earlier build cannot leak into the build.
+* **It aborts instead of installing stale code.** After syncing it checks
+  `HEAD == origin/<branch>`; if the remote cannot be reached, the run fails
+  rather than quietly reinstalling what was already on disk.
+* **A failed sync no longer takes the appliance down.** The running instance is
+  stopped only after the new code is in hand, and a fresh clone goes to a
+  staging directory that is swapped in only once the clone succeeds.
+* **Docker re-deploys actually pick up new code.** `docker compose up -d` only
+  builds when the image tag is missing, so a re-deploy was reusing the cached
+  `ztna-lab-appliance` image and kept running the old binary. New
+  `make docker-redeploy` runs `build --pull` + `up -d --force-recreate`, and
+  `setup.sh` uses it. `make docker-up` now passes `--build` too.
+* **Fixed: `make docker-build` built nothing.** Both compose services sit behind
+  a profile, and the target was missing `--profile host`, so compose selected no
+  service at all and exited successfully.
+* Stopped containers are now removed as well — a stopped `ztna-appliance` holds
+  the name and would be recreated from the old image.
+* The image tag comes from `ZTNA_IMAGE_TAG` (default `latest`) instead of a
+  hardcoded `:1.0` that never tracked the real version.
+* `ZTNA_MODE=docker|baremetal` skips the menu so re-deploys can run from cron,
+  Ansible or CI, where `read < /dev/tty` would fail. `ZTNA_BRANCH`, `ZTNA_REPO`
+  and `ZTNA_DIR` are also configurable.
+* Every deploy records branch, commit, subject, mode and timestamp in
+  `/etc/ztna-lab/deployed.env` — the only way to tell what is running in bare
+  metal mode, where the source tree is deleted after install.
+
 ## v1.5 — Per-module log switches
 
 * **A debug on/off switch per module in the admin panel** (SYS, DNS, HTTP, SSH,

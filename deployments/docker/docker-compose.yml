@@ -11,16 +11,22 @@
 #
 # Uso (a partir da raiz do repo, ou via Makefile):
 #   make docker-up                                             # usa profile host
+#   make docker-redeploy                                       # rebuild + recreate
 #   docker compose -f deployments/docker/docker-compose.yml --profile host up -d
 #   docker compose -f deployments/docker/docker-compose.yml --profile bridge up -d
 #
 # Idêntico com podman-compose / podman compose.
+#
+# Re-deploy: a tag da imagem vem de ZTNA_IMAGE_TAG (default: latest). Compose
+# só builda quando a tag não existe, então `up -d` sozinho reaproveita a
+# imagem antiga e continua rodando o binário velho. Depois de atualizar o
+# código use `make docker-redeploy` (build --pull + up --force-recreate).
 
 services:
 
   ztna-appliance-host:
     profiles: ["host"]
-    image: ztna-lab-appliance:1.0
+    image: ztna-lab-appliance:${ZTNA_IMAGE_TAG:-latest}
     build:
       context: ../..                              # raiz do repo
       dockerfile: deployments/docker/Dockerfile
@@ -40,7 +46,7 @@ services:
 
   ztna-appliance-bridge:
     profiles: ["bridge"]
-    image: ztna-lab-appliance:1.0
+    image: ztna-lab-appliance:${ZTNA_IMAGE_TAG:-latest}
     build:
       context: ../..
       dockerfile: deployments/docker/Dockerfile

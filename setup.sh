@@ -9,6 +9,16 @@
 #
 # Uso direto:    bash setup.sh
 # Uso via pipe:  curl -fsSL <url>/setup.sh | bash
+#
+# O script é idempotente e serve como re-deploy: cada execução sincroniza o
+# repositório com o HEAD de origin/main e reconstrói a partir desse código.
+# Se a sincronização falhar, ele aborta em vez de instalar a versão antiga.
+#
+# Variáveis de ambiente:
+#   ZTNA_MODE    docker | baremetal   — pula o menu (re-deploy não interativo)
+#   ZTNA_BRANCH  branch a implantar   — default: main
+#   ZTNA_REPO    URL do repositório   — default: repositório oficial
+#   ZTNA_DIR     diretório do clone   — default: /opt/ztna-lab-appliance
 
 # ────────── bash bootstrap ──────────
 # Re-executa sob bash. Alpine mínimo não inclui bash; instala se necessário.
@@ -75,9 +85,14 @@ fi
 
 # Privilégios
 SUDO=""
+# SUDO_E preserva o ambiente (ZTNA_IMAGE_TAG chega ao compose). É uma variável
+# separada porque, rodando como root, SUDO é vazio e a flag -E viraria o nome
+# do comando a executar.
+SUDO_E=""
 if [ "$(id -u)" -ne 0 ]; then
     command -v sudo >/dev/null 2>&1 || die "Execute como root ou instale o sudo."
     SUDO="sudo"
+    SUDO_E="sudo -E"
 fi
 
 # ────────── helpers de pacote ──────────
@@ -230,6 +245,14 @@ check_ports() {
     fi
 }
 
+# ────────── repositório ──────────
+# Definido cedo: stop_existing usa o clone anterior (se houver) para derrubar
+# o compose de forma limpa, antes de a árvore ser sincronizada.
+REPO_URL="${ZTNA_REPO:-https://github.com/loardracoon/ztna-lab-appliance.git}"
+REPO_DIR="${ZTNA_DIR:-/opt/ztna-lab-appliance}"
+REPO_BRANCH="${ZTNA_BRANCH:-main}"
+COMPOSE_FILE="deployments/docker/docker-compose.yml"
+
 # 1. PARAR SERVIÇOS EXISTENTES
 stop_existing() {
     hdr "Verificando instalações existentes"
@@ -248,9 +271,16 @@ stop_existing() {
     fi
 
     if command -v docker >/dev/null 2>&1; then
-        if $SUDO docker ps -q -f "name=ztna-appliance" 2>/dev/null | grep -q .; then
-            warn "Container 'ztna-appliance' em execução. Removendo..."
-            $SUDO docker rm -f ztna-appliance >/dev/null
+        # Derruba pelo compose primeiro, para o container e a rede saírem juntos.
+        if [ -f "$REPO_DIR/$COMPOSE_FILE" ]; then
+            $SUDO docker compose -f "$REPO_DIR/$COMPOSE_FILE" --profile host down \
+                >/dev/null 2>&1 || true
+        fi
+        # -a: um container parado também bloqueia o nome e seria reaproveitado
+        # com a imagem antiga no próximo `up`.
+        if $SUDO docker ps -aq -f "name=^ztna-appliance$" 2>/dev/null | grep -q .; then
+            warn "Container 'ztna-appliance' encontrado. Removendo..."
+            $SUDO docker rm -f ztna-appliance >/dev/null 2>&1 || true
             found=1
         fi
     fi
@@ -275,9 +305,20 @@ EOF
 [ "$INIT" = "unknown" ] && die "Init system não reconhecido (nem systemd nem OpenRC). Instale manualmente."
 [ -z "$PKG" ]           && die "Nenhum gerenciador de pacotes suportado encontrado."
 
-stop_existing
+# Nota: stop_existing roda só depois da sincronização do repositório. Derrubar
+# o appliance antes significaria deixá-lo fora do ar caso o fetch falhasse.
 
 # ────────── menu ──────────
+# ZTNA_MODE pula o menu: um re-deploy roda em cron/ansible, onde não há tty
+# e `read < /dev/tty` falharia.
+if [ -n "${ZTNA_MODE:-}" ]; then
+    case "$ZTNA_MODE" in
+        docker|baremetal) MODE="$ZTNA_MODE" ;;
+        *) die "ZTNA_MODE inválido: '$ZTNA_MODE' (use docker ou baremetal)." ;;
+    esac
+    hdr "Modo de deployment: $MODE (via ZTNA_MODE)"
+else
+
 hdr "Escolha o modo de deployment"
 cat <<EOF
   ${C_BOLD}1)${C_RST} Docker
@@ -303,22 +344,84 @@ while true; do
     esac
 done
 
-# 2. CLONAR REPOSITÓRIO
-hdr "Clonando Repositório Oficial"
-REPO_URL="https://github.com/loardracoon/ztna-lab-appliance.git"
-REPO_DIR="/opt/ztna-lab-appliance"
+fi
+
+# 2. SINCRONIZAR REPOSITÓRIO COM origin/<branch>
+#
+# Todo deploy parte do HEAD remoto, nunca do que estava em disco. Se o fetch
+# falhar não dá para saber se a cópia local está atualizada, então o script
+# aborta — instalar código velho em silêncio é pior do que não instalar.
+hdr "Sincronizando com origin/$REPO_BRANCH"
 
 ensure_git_and_curl
 
-if [ -d "$REPO_DIR" ]; then
-    info "Removendo repositório antigo em $REPO_DIR..."
+fresh_clone() {
+    # Guarda contra um REPO_DIR vazio ou absurdo antes de um rm -rf.
+    case "$REPO_DIR" in
+        ""|"/"|"/usr"|"/etc"|"/var"|"/home") die "REPO_DIR inseguro: '$REPO_DIR'" ;;
+    esac
+    # Clona ao lado e só troca quando o clone termina: se a rede cair no meio,
+    # a cópia antiga continua no lugar em vez de a máquina ficar sem fonte.
+    local staging="${REPO_DIR}.new.$$"
+    $SUDO rm -rf "$staging"
+    info "Clonando $REPO_BRANCH em $REPO_DIR..."
+    if ! $SUDO git clone -q --branch "$REPO_BRANCH" --single-branch "$REPO_URL" "$staging"; then
+        $SUDO rm -rf "$staging"
+        die "Falha ao clonar $REPO_URL (branch $REPO_BRANCH)."
+    fi
     $SUDO rm -rf "$REPO_DIR"
+    $SUDO mv "$staging" "$REPO_DIR"
+}
+
+if [ -d "$REPO_DIR/.git" ] \
+   && [ "$($SUDO git -C "$REPO_DIR" remote get-url origin 2>/dev/null)" = "$REPO_URL" ]; then
+    info "Clone existente encontrado — atualizando..."
+    if $SUDO git -C "$REPO_DIR" fetch --prune --quiet origin "$REPO_BRANCH" 2>/dev/null; then
+        # checkout -f: sem o -f o git recusa trocar de branch com a árvore suja,
+        # e um deploy anterior deixa dist/ e edições locais para trás.
+        # reset --hard + clean -xfd terminam o serviço: nada do estado antigo
+        # sobrevive para o build pegar por engano.
+        $SUDO git -C "$REPO_DIR" checkout -q -f -B "$REPO_BRANCH" "origin/$REPO_BRANCH" \
+            || die "Falha ao posicionar a branch $REPO_BRANCH."
+        $SUDO git -C "$REPO_DIR" reset --hard -q "origin/$REPO_BRANCH"
+        $SUDO git -C "$REPO_DIR" clean -xfdq
+    else
+        warn "Fetch falhou no clone existente. Refazendo do zero..."
+        fresh_clone
+    fi
+else
+    fresh_clone
 fi
 
-info "Clonando em $REPO_DIR..."
-$SUDO git clone -q "$REPO_URL" "$REPO_DIR"
-cd "$REPO_DIR" || die "Falha ao acessar o diretório clonado."
-ok "Repositório preparado."
+cd "$REPO_DIR" || die "Falha ao acessar $REPO_DIR."
+
+# Prova de que a árvore é exatamente origin/<branch>: sem isso, um fetch
+# parcial ou um checkout preso em commit antigo passaria despercebido.
+DEPLOY_SHA="$($SUDO git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || true)"
+REMOTE_SHA="$($SUDO git -C "$REPO_DIR" rev-parse "origin/$REPO_BRANCH" 2>/dev/null || true)"
+[ -n "$DEPLOY_SHA" ] || die "Não foi possível ler o commit de $REPO_DIR."
+[ "$DEPLOY_SHA" = "$REMOTE_SHA" ] \
+    || die "Árvore fora de sincronia com origin/$REPO_BRANCH (HEAD=$DEPLOY_SHA remoto=$REMOTE_SHA)."
+
+DEPLOY_SHORT="$($SUDO git -C "$REPO_DIR" rev-parse --short HEAD)"
+DEPLOY_DESC="$($SUDO git -C "$REPO_DIR" log -1 --format='%cd  %s' --date=short)"
+export ZTNA_IMAGE_TAG="${ZTNA_IMAGE_TAG:-latest}"
+
+ok "Código na versão $REPO_BRANCH@$DEPLOY_SHORT"
+info "  $DEPLOY_DESC"
+
+# Registra o que foi implantado. No modo baremetal o código-fonte é apagado
+# no fim, então este arquivo é a única forma de saber o que está rodando.
+record_deploy() {
+    $SUDO mkdir -p /etc/ztna-lab
+    printf 'branch=%s\ncommit=%s\nsubject=%s\nmode=%s\ndeployed_at=%s\n' \
+        "$REPO_BRANCH" "$DEPLOY_SHA" "$($SUDO git -C "$REPO_DIR" log -1 --format='%s')" \
+        "$1" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        | $SUDO tee /etc/ztna-lab/deployed.env >/dev/null
+}
+
+# Só agora: com o código novo em mãos, é seguro derrubar o que está rodando.
+stop_existing
 
 # ════════════════════════════════════════════════
 #  MODO DOCKER
@@ -330,8 +433,17 @@ if [ "$MODE" = "docker" ]; then
     ensure_docker_group
     check_ports 53 80 2222 9000
 
-    info "Iniciando appliance (primeira execução baixa ~500 MB de imagens)..."
-    $SUDO make docker-up
+    # `up -d` sozinho reaproveita a imagem existente e manteria o binário
+    # antigo rodando. docker-redeploy faz build --pull + up --force-recreate,
+    # garantindo que o container venha do código recém-sincronizado.
+    info "Build da imagem a partir de $REPO_BRANCH@$DEPLOY_SHORT (primeira execução baixa ~500 MB)..."
+    if $SUDO make -n docker-redeploy >/dev/null 2>&1; then
+        $SUDO_E make docker-redeploy
+    else
+        # Fallback: checkout antigo, sem o target no Makefile.
+        $SUDO_E docker compose -f "$COMPOSE_FILE" --profile host build --pull
+        $SUDO_E docker compose -f "$COMPOSE_FILE" --profile host up -d --force-recreate
+    fi
     sleep 2
 
     # Verifica container antes da API — app pode ter falhado mesmo com daemon ok.
@@ -341,6 +453,10 @@ if [ "$MODE" = "docker" ]; then
         exit 1
     fi
     ok "Container ztna-appliance em execução."
+    IMAGE_BUILT="$($SUDO docker inspect -f '{{.Created}}' \
+        "$($SUDO docker inspect -f '{{.Image}}' ztna-appliance 2>/dev/null)" 2>/dev/null || true)"
+    [ -n "$IMAGE_BUILT" ] && info "Imagem em uso criada em: $IMAGE_BUILT"
+    record_deploy docker
 
     sleep 1
     if curl -s -m 5 http://localhost:9000/api/health 2>/dev/null | grep -q '"ok"'; then
@@ -362,7 +478,11 @@ if [ "$MODE" = "docker" ]; then
     Logs     :  $SUDO docker compose -f $REPO_DIR/deployments/docker/docker-compose.yml --profile host logs -f
     Stop     :  $SUDO docker stop ztna-appliance
     Restart  :  $SUDO docker restart ztna-appliance
-    Rebuild  :  cd $REPO_DIR && $SUDO make docker-up
+    Re-deploy:  bash setup.sh            (sincroniza com origin/$REPO_BRANCH e reconstrói)
+    Rebuild  :  cd $REPO_DIR && $SUDO make docker-redeploy
+    Versão   :  cat /etc/ztna-lab/deployed.env
+
+  ${C_BOLD}Implantado:${C_RST} $REPO_BRANCH@$DEPLOY_SHORT
 EOF
     exit 0
 fi
@@ -377,7 +497,10 @@ if [ "$MODE" = "baremetal" ]; then
     ensure_docker
     check_ports 53 80 2222 9000
 
-    info "Compilando binário via Docker..."
+    # clean antes do build: `make build` é guiado por timestamp e um dist/
+    # sobrevivente de outra execução poderia ser instalado sem recompilar.
+    info "Compilando binário de $REPO_BRANCH@$DEPLOY_SHORT via Docker..."
+    $SUDO make clean >/dev/null 2>&1 || true
     $SUDO make build
     [ -f dist/ztna-lab ] || die "Falha no build do binário."
     ok "Binário compilado: $(ls -lh dist/ztna-lab | awk '{print $5}')."
@@ -399,6 +522,7 @@ if [ "$MODE" = "baremetal" ]; then
             || { err "Serviço falhou. Veja: cat /var/log/ztna-lab/stderr.log"; exit 1; }
     fi
     ok "Serviço ztna-lab ativo."
+    record_deploy baremetal
 
     if curl -s -m 5 http://localhost:9000/api/health 2>/dev/null | grep -q '"ok"'; then
         ok "Admin API ativa em :9000"
@@ -483,6 +607,16 @@ EOF
     rm -rf /etc/ztna-lab /var/lib/ztna-lab /var/log/ztna-lab
 EOF
     fi
+
+    cat <<EOF
+
+  ${C_BOLD}Re-deploy:${C_RST}
+    bash setup.sh                     (sincroniza com origin/$REPO_BRANCH e recompila)
+    ZTNA_MODE=baremetal bash setup.sh (sem menu, para automação)
+
+  ${C_BOLD}Implantado:${C_RST} $REPO_BRANCH@$DEPLOY_SHORT
+    Detalhes  :  cat /etc/ztna-lab/deployed.env
+EOF
 fi
 
 ok "Setup concluído."

@@ -12,6 +12,7 @@
 # Docker / Podman:
 #   make docker-build
 #   make docker-up
+#   make docker-redeploy    rebuild + recreate (use após atualizar o código)
 #   make docker-down
 #   make docker-logs
 #
@@ -21,8 +22,7 @@
 #   make help
 
 BINARY      := ztna-lab
-VERSION     := 1.3.0
-IMAGE       := ztna-lab-appliance:$(VERSION)
+VERSION     := 1.5.0
 GO_IMAGE    := golang:1.22-alpine
 ROOT        := $(shell pwd)
 
@@ -105,13 +105,26 @@ uninstall-alpine: ## Remove o serviço OpenRC (precisa sudo)
 COMPOSE := docker compose -f deployments/docker/docker-compose.yml
 PROFILE := --profile host
 
+# Both services live behind a profile, so every compose command needs
+# $(PROFILE) — without it compose selects no service and silently does nothing.
+
 .PHONY: docker-build
-docker-build: ## Build da imagem Docker
-	$(COMPOSE) build
+docker-build: ## Build da imagem Docker a partir do código atual
+	$(COMPOSE) $(PROFILE) build --pull
 
 .PHONY: docker-up
 docker-up: ## Sobe o appliance via docker compose (network host)
-	$(COMPOSE) $(PROFILE) up -d
+	$(COMPOSE) $(PROFILE) up -d --build
+	@$(COMPOSE) $(PROFILE) ps
+
+# Re-deploy: compose only builds when the image tag is missing, so a plain
+# `up -d` happily reuses a stale image and keeps running the old binary.
+# Rebuilding and forcing recreation is what makes a re-deploy actually pick
+# up the code in the working tree.
+.PHONY: docker-redeploy
+docker-redeploy: ## Rebuild a imagem do código atual e recria o container
+	$(COMPOSE) $(PROFILE) build --pull
+	$(COMPOSE) $(PROFILE) up -d --force-recreate
 	@$(COMPOSE) $(PROFILE) ps
 
 .PHONY: docker-down

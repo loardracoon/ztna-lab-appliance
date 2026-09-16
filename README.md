@@ -84,13 +84,60 @@ curl -fsSL https://raw.githubusercontent.com/loardracoon/ztna-lab-appliance/main
 The installer:
 1. Detects the package manager (`apk`, `apt`, `dnf`, `yum`) and init system (`openrc`, `systemd`)
 2. Installs `git`, `curl`, `make`, and Docker if missing
-3. Clones the repository to `/opt/ztna-lab-appliance`
-4. Checks for port conflicts on 53, 80, 2222, and 9000
-5. Asks whether to deploy via **Docker** or **bare metal**
-6. Builds, installs, and starts the appliance
-7. In bare metal mode, removes build tools after install to minimize footprint
+3. Asks whether to deploy via **Docker** or **bare metal**
+4. Synchronizes `/opt/ztna-lab-appliance` with the head of `origin/main`
+5. Stops any previous instance, checks for port conflicts on 53, 80, 2222, and 9000
+6. Builds, installs, and starts the appliance from that exact commit
+7. Records what was deployed in `/etc/ztna-lab/deployed.env`
+8. In bare metal mode, removes build tools after install to minimize footprint
 
 Tested on: **Alpine Linux 3.18+** (OpenRC), **Debian/Ubuntu** (systemd), **RHEL/Rocky/Alma/CentOS** (systemd).
+
+### Re-deploying
+
+Running the installer again is the supported way to upgrade: it is idempotent
+and every run rebuilds from the current head of `origin/main`.
+
+```bash
+bash setup.sh                       # sync + rebuild, interactive
+ZTNA_MODE=docker bash setup.sh      # no menu — for cron, Ansible, CI
+```
+
+What the re-deploy guarantees:
+
+* The working tree is hard-reset to `origin/<branch>` and `git clean -xfd`-ed,
+  so local edits and a stale `dist/` from a previous build cannot leak in.
+* The installer verifies `HEAD == origin/<branch>` and **aborts** if it cannot
+  reach the remote, rather than silently reinstalling the old code.
+* The previous instance is stopped only *after* the new code is in hand, so a
+  failed sync leaves the running appliance untouched.
+* Docker mode rebuilds the image and recreates the container
+  (`build --pull` + `up -d --force-recreate`). A plain `docker compose up -d`
+  reuses the existing image tag and would keep running the old binary.
+* Bare metal mode runs `make clean` first, so the timestamp-driven build can
+  never install a leftover binary.
+
+Check what is currently deployed — useful in bare metal mode, where the source
+tree is deleted after install:
+
+```bash
+cat /etc/ztna-lab/deployed.env
+# branch=main
+# commit=4d90ca1c5d64a75c23755aac3ed7f40573ee5327
+# subject=Merge branch 'claude/relaxed-goodall-bj83li'
+# mode=docker
+# deployed_at=2026-09-16T04:28:37Z
+```
+
+Installer environment variables:
+
+| Variable | Default | Description |
+|---|---|---|
+| `ZTNA_MODE` | *(menu)* | `docker` or `baremetal` — skips the interactive prompt |
+| `ZTNA_BRANCH` | `main` | Branch to deploy |
+| `ZTNA_REPO` | official repo | Repository URL to clone from |
+| `ZTNA_DIR` | `/opt/ztna-lab-appliance` | Where the source is kept |
+| `ZTNA_IMAGE_TAG` | `latest` | Docker image tag built by compose |
 
 ---
 
@@ -107,6 +154,10 @@ cd ztna-lab-appliance
 
 # Build image and start (network_mode: host — no NAT overhead)
 make docker-up
+
+# After pulling new code: rebuild the image and recreate the container.
+# `up -d` alone reuses the existing image tag and keeps the old binary running.
+git pull && make docker-redeploy
 
 # Tail logs
 make docker-logs
