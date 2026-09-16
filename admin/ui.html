@@ -1,8 +1,10 @@
 <!DOCTYPE html>
-<html lang="pt-BR">
+<html lang="en">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ZTNA Lab — Admin</title>
+<link rel="icon" href="data:,">
 <style>
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
@@ -33,66 +35,119 @@
        text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid #30363d; }
   td { padding: 6px 4px; border-bottom: 1px solid #21262d; }
   .form-row { display: grid; grid-template-columns: 100px 1fr 1fr auto; gap: 6px; margin-top: 8px; }
+  /* Long record names must wrap instead of pushing the delete button out of the card. */
+  #dns-table { table-layout: fixed; }
+  #dns-table th, #dns-table td { word-break: break-all; }
+  #dns-table th:first-child, #dns-table td:first-child { width: 64px; }
+  #dns-table th:last-child, #dns-table td:last-child { width: 36px; }
+  #dns-table td:last-child button { margin-left: 0; padding: 2px 6px; }
   .log { background: #010409; padding: 12px; border-radius: 4px; font-size: 11px;
-         max-height: 280px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; }
+         max-height: 320px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; }
   .log .DNS { color: #79c0ff; }
   .log .HTTP { color: #7ee787; }
   .log .SSH { color: #d2a8ff; }
   .log .SYS { color: #e3b341; }
   .log .ADM { color: #ff7b72; }
+  .log-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+                 margin: -4px 0 10px; font-size: 11px; color: #8b949e; }
+  .log-toolbar .spacer { flex: 1; }
+  .log-toolbar select { padding: 2px 6px; font-size: 11px; }
+  .log-toolbar label { display: flex; align-items: center; gap: 4px; cursor: pointer; }
+  .log-meta { margin-top: 8px; font-size: 11px; color: #6e7681; display: flex;
+              gap: 12px; flex-wrap: wrap; }
+  .err { color: #ff7b72; }
+  .muted { color: #8b949e; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: #3fb950; display: inline-block; }
+  .dot.paused { background: #8b949e; }
+  .dot.error { background: #f85149; }
 </style>
 </head>
 <body>
-<h1>ZTNA Lab — Painel de Administração</h1>
-<div class="sub">Plano de gerenciamento. Plano de teste exposto na porta 80.</div>
+<h1>ZTNA Lab — Admin Panel</h1>
+<div class="sub">Management plane. The test plane is exposed on port 80.</div>
 
 <div class="grid">
 
   <div class="card">
-    <h2>Status dos serviços</h2>
-    <div id="status">carregando...</div>
+    <h2>Service status</h2>
+    <div id="status" class="muted">loading…</div>
   </div>
 
   <div class="card">
-    <h2>Registros DNS</h2>
-    <table id="dns-table"><thead><tr><th>Tipo</th><th>Nome</th><th>Valor</th><th></th></tr></thead><tbody></tbody></table>
+    <h2>DNS records</h2>
+    <table id="dns-table"><thead><tr><th>Type</th><th>Name</th><th>Value</th><th></th></tr></thead><tbody></tbody></table>
     <div class="form-row">
       <select id="dns-type"><option>A</option><option>CNAME</option></select>
-      <input id="dns-name" placeholder="nome">
-      <input id="dns-value" placeholder="ip ou alvo">
+      <input id="dns-name" placeholder="name">
+      <input id="dns-value" placeholder="ip or target">
       <button class="primary" onclick="addDNS()">+</button>
     </div>
   </div>
 
   <div class="card">
-    <h2>Sessões SSH ativas</h2>
-    <table id="ssh-table"><thead><tr><th>ID</th><th>Usuário</th><th>IP</th><th>Conectado</th></tr></thead><tbody></tbody></table>
+    <h2>Active SSH sessions</h2>
+    <table id="ssh-table"><thead><tr><th>ID</th><th>User</th><th>IP</th><th>Connected</th></tr></thead><tbody></tbody></table>
   </div>
 
   <div class="card" style="grid-column: 1/-1;">
-    <h2>Log <button onclick="loadLog()" style="float:right">refresh</button></h2>
-    <div class="log" id="log">carregando...</div>
+    <h2>Log</h2>
+    <div class="log-toolbar">
+      <span class="dot" id="log-dot"></span>
+      <span id="log-state">live</span>
+      <span class="spacer"></span>
+      <label><input type="checkbox" id="log-follow" checked style="width:auto"> follow</label>
+      <label>lines
+        <select id="log-lines">
+          <option>80</option><option>200</option><option>500</option><option>1000</option>
+        </select>
+      </label>
+      <button id="log-pause" onclick="toggleLogPause()">pause</button>
+      <button onclick="loadLog()">refresh</button>
+    </div>
+    <div class="log" id="log"><span class="muted">loading…</span></div>
+    <div class="log-meta" id="log-meta"></div>
   </div>
 
 </div>
 
 <script>
-const TOKEN = localStorage.getItem('ztna_token') || '';
-const H = TOKEN ? { 'Authorization': 'Bearer ' + TOKEN } : {};
+let TOKEN = localStorage.getItem('ztna_token') || '';
+let logPaused = false;
+let askingToken = false;
+
+function authHeaders() {
+  return TOKEN ? { 'Authorization': 'Bearer ' + TOKEN } : {};
+}
 
 async function api(path, opts = {}) {
-  opts.headers = { ...(opts.headers || {}), ...H };
+  opts.headers = { ...(opts.headers || {}), ...authHeaders() };
   if (opts.body) opts.headers['Content-Type'] = 'application/json';
-  const r = await fetch(path, opts);
-  if (!r.ok) throw new Error((await r.json()).error || r.statusText);
+  // Polled endpoints must never be served from the browser cache, otherwise
+  // the panel keeps re-rendering the very first response it received.
+  opts.cache = 'no-store';
+  const sep = path.includes('?') ? '&' : '?';
+  const r = await fetch(path + sep + '_=' + Date.now(), opts);
+  if (!r.ok) {
+    let msg = r.statusText;
+    try { msg = (await r.json()).error || msg; } catch (e) {}
+    const err = new Error(msg);
+    err.status = r.status;
+    throw err;
+  }
   return r.json();
 }
+
+function escapeHTML(s) {
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+// ─────────────────────── status ───────────────────────
 
 async function loadStatus() {
   const s = await api('/api/status');
   const svc = (name, info) => `
     <div class="row">
-      <span><b>${name}</b> <span style="color:#8b949e">:${info.port}</span></span>
+      <span><b>${name}</b> <span class="muted">:${info.port}</span></span>
       <span>
         <span class="pill ${info.running ? 'up' : 'down'}">${info.running ? 'UP' : 'DOWN'}</span>
         <button onclick="toggle('${name.toLowerCase()}', ${info.running})">${info.running ? 'stop' : 'start'}</button>
@@ -101,25 +156,31 @@ async function loadStatus() {
   const sshDebugStyle = s.ssh.debug ? 'background:#1f4f6f;border-color:#2a6f8f;color:#79c0ff' : '';
   const sshRow = `
     <div class="row">
-      <span><b>SSH</b> <span style="color:#8b949e">:${s.ssh.port}</span></span>
+      <span><b>SSH</b> <span class="muted">:${s.ssh.port}</span></span>
       <span>
         <span class="pill ${s.ssh.running ? 'up' : 'down'}">${s.ssh.running ? 'UP' : 'DOWN'}</span>
         <button onclick="toggle('ssh', ${s.ssh.running})">${s.ssh.running ? 'stop' : 'start'}</button>
-        <button style="${sshDebugStyle}" onclick="toggleDebug(${s.ssh.debug})" title="Ativar/desativar debug SSH">debug ${s.ssh.debug ? 'ON' : 'OFF'}</button>
+        <button style="${sshDebugStyle}" onclick="toggleDebug(${s.ssh.debug})" title="Enable/disable SSH debug">debug ${s.ssh.debug ? 'ON' : 'OFF'}</button>
       </span>
     </div>`;
   document.getElementById('status').innerHTML = svc('DNS', s.dns) + svc('HTTP', s.http) + sshRow;
 }
 
 async function toggle(svc, isRunning) {
-  await api(`/api/${svc}/${isRunning ? 'stop' : 'start'}`, { method: 'POST' });
+  try {
+    await api(`/api/${svc}/${isRunning ? 'stop' : 'start'}`, { method: 'POST' });
+  } catch (e) { alert(e.message); }
   loadStatus();
 }
 
 async function toggleDebug(isOn) {
-  await api('/api/ssh/debug', { method: 'POST', body: JSON.stringify({ enabled: !isOn }) });
+  try {
+    await api('/api/ssh/debug', { method: 'POST', body: JSON.stringify({ enabled: !isOn }) });
+  } catch (e) { alert(e.message); }
   loadStatus();
 }
+
+// ─────────────────────── DNS ───────────────────────
 
 async function loadDNS() {
   const r = await api('/api/dns/records');
@@ -127,10 +188,11 @@ async function loadDNS() {
   for (const [n, v] of Object.entries(r.a || {})) rows.push(['A', n, v]);
   for (const [n, v] of Object.entries(r.cname || {})) rows.push(['CNAME', n, v]);
   document.querySelector('#dns-table tbody').innerHTML = rows
-    .sort((a,b) => a[1].localeCompare(b[1]))
-    .map(([t,n,v]) => `<tr><td><span class="pill ${t==='A'?'up':'down'}">${t}</span></td>
-      <td>${n}</td><td>${v}</td><td><button class="danger" onclick="delDNS('${n}')">×</button></td></tr>`)
-    .join('') || '<tr><td colspan="4" style="color:#8b949e">nenhum registro</td></tr>';
+    .sort((a, b) => a[1].localeCompare(b[1]))
+    .map(([t, n, v]) => `<tr><td><span class="pill ${t === 'A' ? 'up' : 'down'}">${t}</span></td>
+      <td>${escapeHTML(n)}</td><td>${escapeHTML(v)}</td>
+      <td><button class="danger" data-del="${escapeHTML(n)}">×</button></td></tr>`)
+    .join('') || '<tr><td colspan="4" class="muted">no records</td></tr>';
 }
 
 async function addDNS() {
@@ -146,39 +208,122 @@ async function addDNS() {
   } catch (e) { alert(e.message); }
 }
 
+// Delegated so the record name never has to survive a round-trip through an
+// inline onclick attribute.
+document.querySelector('#dns-table tbody').addEventListener('click', e => {
+  const btn = e.target.closest('button[data-del]');
+  if (btn) delDNS(btn.dataset.del);
+});
+
 async function delDNS(name) {
-  if (!confirm('Remover ' + name + '?')) return;
-  await api('/api/dns/records/' + encodeURIComponent(name), { method: 'DELETE' });
+  if (!confirm('Remove ' + name + '?')) return;
+  try {
+    await api('/api/dns/records/' + encodeURIComponent(name), { method: 'DELETE' });
+  } catch (e) { alert(e.message); }
   loadDNS();
 }
+
+// ─────────────────────── SSH ───────────────────────
 
 async function loadSSH() {
   const sessions = await api('/api/ssh/sessions');
   document.querySelector('#ssh-table tbody').innerHTML = (sessions || [])
-    .map(s => `<tr><td>${s.id}</td><td>${s.user}</td><td>${s.ip}</td><td>${s.connected_at || ''}</td></tr>`)
-    .join('') || '<tr><td colspan="4" style="color:#8b949e">nenhuma sessão</td></tr>';
+    .map(s => `<tr><td>${escapeHTML(s.id)}</td><td>${escapeHTML(s.user)}</td>
+      <td>${escapeHTML(s.ip)}</td><td>${escapeHTML(s.connected_at || '')}</td></tr>`)
+    .join('') || '<tr><td colspan="4" class="muted">no sessions</td></tr>';
 }
 
-async function loadLog() {
-  const r = await api('/api/log/tail?n=80');
-  const html = (r.lines || []).map(line => {
-    const m = line.match(/\[(\w+)\s*\]/);
-    const cls = m ? m[1].trim() : '';
-    return `<span class="${cls}">${line}</span>`;
-  }).join('\n');
-  document.getElementById('log').innerHTML = html || '<span style="color:#8b949e">sem entradas</span>';
+// ─────────────────────── log ───────────────────────
+
+function setLogState(kind, text) {
+  const dot = document.getElementById('log-dot');
+  dot.className = 'dot' + (kind === 'live' ? '' : ' ' + kind);
+  document.getElementById('log-state').textContent = text;
 }
 
-async function refresh() {
-  try { await Promise.all([loadStatus(), loadDNS(), loadSSH(), loadLog()]); }
-  catch (e) {
-    if (e.message === 'unauthorized') {
-      const t = prompt('Token de admin:');
-      if (t) { localStorage.setItem('ztna_token', t); location.reload(); }
-    }
+function toggleLogPause() {
+  logPaused = !logPaused;
+  document.getElementById('log-pause').textContent = logPaused ? 'resume' : 'pause';
+  if (logPaused) {
+    setLogState('paused', 'paused');
+  } else {
+    setLogState('live', 'live');
+    loadLog();
   }
 }
 
+function fmtBytes(n) {
+  if (!n && n !== 0) return '—';
+  if (n < 1024) return n + ' B';
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+  return (n / 1024 / 1024).toFixed(1) + ' MB';
+}
+
+async function loadLog() {
+  const box = document.getElementById('log');
+  const follow = document.getElementById('log-follow').checked;
+  // Keep the newest lines in view: the tail is rendered oldest-first, so
+  // without this the pane always shows the same stale lines at the top.
+  const stick = follow || (box.scrollTop + box.clientHeight >= box.scrollHeight - 24);
+  const n = document.getElementById('log-lines').value;
+
+  let r;
+  try {
+    r = await api('/api/log/tail?n=' + n);
+  } catch (e) {
+    setLogState('error', 'error');
+    document.getElementById('log-meta').innerHTML =
+      '<span class="err">tail failed: ' + escapeHTML(e.message) + '</span>';
+    throw e;
+  }
+
+  const html = (r.lines || []).map(line => {
+    const m = line.match(/\[(\w+)\s*\]/);
+    const cls = m ? m[1].trim() : '';
+    return `<span class="${cls}">${escapeHTML(line)}</span>`;
+  }).join('\n');
+  box.innerHTML = html || '<span class="muted">no entries</span>';
+  if (stick) box.scrollTop = box.scrollHeight;
+
+  const f = r.file || {};
+  const pct = f.max_lines ? Math.round((f.lines / f.max_lines) * 100) : 0;
+  document.getElementById('log-meta').innerHTML = [
+    'updated ' + escapeHTML(r.server_time || ''),
+    'showing ' + (r.count || 0) + ' lines',
+    'file ' + escapeHTML(f.path || '—'),
+    'size ' + fmtBytes(f.size_bytes),
+    'recycle at ' + (f.max_lines || '—') + ' lines (' + f.lines + ', ' + pct + '%)' +
+      (f.has_backup ? ' · .1 backup kept' : ''),
+  ].map(s => '<span>' + s + '</span>').join('');
+
+  if (!logPaused) setLogState('live', 'live');
+}
+
+// ─────────────────────── refresh loop ───────────────────────
+
+function handleUnauthorized() {
+  if (askingToken) return;
+  askingToken = true;
+  const t = prompt('Admin token:');
+  if (t) {
+    localStorage.setItem('ztna_token', t);
+    TOKEN = t;
+  }
+  askingToken = false;
+}
+
+async function refresh() {
+  // allSettled, not all: one failing endpoint must not stop the others from
+  // updating — that is what used to freeze the whole panel, log included.
+  const tasks = [loadStatus(), loadDNS(), loadSSH()];
+  if (!logPaused) tasks.push(loadLog());
+  const results = await Promise.allSettled(tasks);
+  if (results.some(r => r.status === 'rejected' && r.reason && r.reason.status === 401)) {
+    handleUnauthorized();
+  }
+}
+
+document.getElementById('log-lines').addEventListener('change', loadLog);
 refresh();
 setInterval(refresh, 5000);
 </script>

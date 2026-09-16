@@ -1,5 +1,44 @@
 # Changelog
 
+## v1.4 — English-only control surfaces + log view fixes
+
+* **Control panel and admin panel are now English-only.** Every user-facing
+  string in the local REPL, the `ztna-lab cli` remote client and the web admin
+  UI was translated: prompts, help text, usage lines, table headers, and the
+  error messages the DNS/HTTP/SSH servers return through both surfaces.
+  The admin page is now `lang="en"`.
+* **Log view actually refreshes.** Four separate causes were fixed:
+  * `refresh()` used `Promise.all`, so a single failing endpoint aborted the
+    whole poll and left the log pane frozen. It now uses `Promise.allSettled`
+    and each panel fails independently.
+  * The polled API responses carried no cache headers. The admin API now sends
+    `Cache-Control: no-store` and the UI fetches with `cache: 'no-store'` plus
+    a cache-busting query parameter.
+  * The tail renders oldest-first, but the pane never scrolled, so the newest
+    lines stayed below the fold and the view looked static. The pane now
+    follows the tail (with a `follow` toggle that respects manual scrolling).
+  * `logger.Init` gave up when `ZTNA_LOG_PATH` could not be opened, which made
+    `Tail` fail permanently with "logger not initialized" and no visible error.
+    It now creates the parent directory, falls back to `<tmpdir>/ztna_lab.log`,
+    and the UI surfaces tail errors instead of swallowing them.
+* **Log file is recycled by line count.** `ZTNA_LOG_MAX_LINES` (default 5000)
+  recycles the file alongside the existing `ZTNA_LOG_MAX_BYTES` (default 10 MB)
+  limit — whichever is reached first. The line counter is seeded from the
+  existing file on startup, so a restart on an oversized file recycles it
+  immediately. Disk usage stays bounded at roughly 2x the limit (current file
+  plus one `.1` backup).
+* `logger.Tail` reads backwards from the end of the file in chunks instead of
+  scanning it from byte 0 on every poll, and tops up from the `.1` backup so
+  the view does not go blank right after a recycle.
+* New `logger.Stat()` exposes path, size, line count and recycle limits;
+  `/api/log/tail` returns them and the panel shows the fill level.
+* Admin panel: pause/resume for the live tail, selectable tail depth
+  (80/200/500/1000), log lines are HTML-escaped before rendering, and long DNS
+  record names no longer push the delete button outside the card.
+* Unit tests for the logger (`logger/logger_test.go`) covering recycling by
+  line and byte limits, tail ordering, tail across a recycle, and the
+  unwritable-path fallback.
+
 ## v1.3 — Alpine Linux support + build robustness
 
 * **Alpine Linux support** (OpenRC, apk). New `deployments/alpine/` directory

@@ -95,7 +95,7 @@ func (s *Server) Start() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.running {
-		return fmt.Errorf("SSH já está rodando")
+		return fmt.Errorf("SSH server is already running")
 	}
 
 	scfg := &ssh.ServerConfig{
@@ -144,14 +144,14 @@ func (s *Server) Start() error {
 		logger.Log("SSH ", "host key Ed25519 loaded: "+s.cfg.Ed25519KeyPath)
 	}
 	if added == 0 {
-		return fmt.Errorf("nenhuma host key configurada (ZTNA_SSH_KEY e ZTNA_SSH_ED25519_KEY estão vazios)")
+		return fmt.Errorf("no host key configured (ZTNA_SSH_KEY and ZTNA_SSH_ED25519_KEY are both empty)")
 	}
 
 	s.config = scfg
 
 	ln, err := net.Listen("tcp", s.addr)
 	if err != nil {
-		return fmt.Errorf("falha ao bindar %s: %w", s.addr, err)
+		return fmt.Errorf("could not bind %s: %w", s.addr, err)
 	}
 	s.listener = ln
 	s.running = true
@@ -170,7 +170,7 @@ func (s *Server) Stop() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.running {
-		return fmt.Errorf("SSH não está rodando")
+		return fmt.Errorf("SSH server is not running")
 	}
 	if err := s.listener.Close(); err != nil {
 		return err

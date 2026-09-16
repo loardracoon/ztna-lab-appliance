@@ -198,7 +198,7 @@ All endpoints require `Authorization: Bearer <token>` when `ZTNA_ADMIN_TOKEN` is
 | POST | `/api/ssh/stop` | Stop SSH server |
 | GET | `/api/ssh/sessions` | List active SSH sessions |
 | POST | `/api/ssh/debug` | Toggle SSH debug mode `{"enabled":true}` — no restart needed |
-| GET | `/api/log/tail?n=50` | Last N log lines |
+| GET | `/api/log/tail?n=50` | Last N log lines, plus log file stats (path, size, line count, recycle limits) |
 | POST | `/api/latency` | Run latency probe `{"url":"...","count":50,"interval_ms":200}` |
 
 Example:
@@ -232,7 +232,9 @@ All settings are environment variables. Docker reads them from `docker-compose.y
 | `ZTNA_SSH_ED25519_KEY` | *(empty)* | Ed25519 host key path (optional; use one, both, or neither) |
 | `ZTNA_SSH_DEBUG` | `false` | Enable SSH debug logging at startup. Can also be toggled at runtime via `POST /api/ssh/debug`. |
 | `ZTNA_DNS_RECORDS` | `/data/dns_records.json` | DNS records persistence file |
-| `ZTNA_LOG_PATH` | `/data/ztna_lab.log` | Log file path. Rotates at 10 MB (keeps one backup). |
+| `ZTNA_LOG_PATH` | `/data/ztna_lab.log` | Log file path. The parent directory is created if missing; if the path cannot be opened the logger falls back to `<tmpdir>/ztna_lab.log` so the log view keeps working. |
+| `ZTNA_LOG_MAX_LINES` | `5000` | Recycle the log file once it reaches this many lines. |
+| `ZTNA_LOG_MAX_BYTES` | `10485760` | Recycle the log file once it reaches this many bytes. Whichever limit is hit first wins. |
 | `ZTNA_ADMIN_URL` | `http://127.0.0.1:9000` | Used by `ztna-lab cli` to locate the daemon |
 
 To protect the Admin API with authentication, generate a token and set it before starting:
@@ -273,7 +275,7 @@ openssl rand -hex 32   # copy the output into ZTNA_ADMIN_TOKEN
 │   └── config.go                  Config struct + ConfigFromEnv()
 │
 ├── logger/
-│   └── logger.go                  Shared logger: stdout + file, size-based rotation
+│   └── logger.go                  Shared logger: stdout + file, line- and size-based recycling
 │
 └── deployments/
     ├── docker/

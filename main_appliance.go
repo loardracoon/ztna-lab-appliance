@@ -1,9 +1,8 @@
-// main_appliance.go — modificações no main.go original para suportar
-// os subcomandos "daemon" e "cli".
+// main_appliance.go — entrypoint of the binary, with the "daemon" and
+// "cli" subcommands.
 //
-// Integre com o main.go existente: as funções abaixo substituem/aumentam
-// a função main() original. As funções runREPL, runLatency etc. do projeto
-// original permanecem.
+// It works together with main.go: the functions below replace/extend the
+// original main(). runREPL, runLatency and friends stay where they are.
 
 package main
 
@@ -24,14 +23,14 @@ import (
 )
 
 func main() {
-	// Inicializa logger sempre apontando para path persistente em /data dentro do container.
+	// The logger always points at a persistent path (/data inside the container).
 	logPath := os.Getenv("ZTNA_LOG_PATH")
 	if logPath == "" {
 		logPath = "/data/ztna_lab.log"
 	}
 	logger.Init(logPath)
 
-	// Roteamento por subcomando.
+	// Subcommand routing.
 	cmd := ""
 	if len(os.Args) > 1 {
 		cmd = os.Args[1]
@@ -45,33 +44,33 @@ func main() {
 	case "version":
 		fmt.Println("ztna-lab appliance 1.0")
 	case "":
-		// Sem argumento: comportamento depende do TTY.
-		// Container interativo (docker run -it) → REPL local
-		// Container headless (docker run -d) → daemon
+		// No argument: behaviour depends on the TTY.
+		// Interactive container (docker run -it) -> local REPL
+		// Headless container (docker run -d)     -> daemon
 		if isatty(os.Stdin) {
-			runREPL() // REPL local original
+			runREPL() // original local REPL
 		} else {
 			runDaemon()
 		}
 	default:
-		fmt.Fprintf(os.Stderr, "comando desconhecido: %s\n", cmd)
-		fmt.Fprintln(os.Stderr, "uso: ztna-lab [daemon|cli|version]")
+		fmt.Fprintf(os.Stderr, "unknown command: %s\n", cmd)
+		fmt.Fprintln(os.Stderr, "usage: ztna-lab [daemon|cli|version]")
 		os.Exit(2)
 	}
 }
 
-// runDaemon sobe todos os servidores e a Admin API, e bloqueia até receber
-// SIGTERM/SIGINT.
+// runDaemon starts every server plus the Admin API and blocks until it
+// receives SIGTERM/SIGINT.
 func runDaemon() {
 	logger.Log("SYS ", "ZTNA Lab appliance starting (daemon mode)")
 
-	// Path do JSON de registros DNS (persistido em /data).
+	// Path of the DNS records JSON (persisted under /data).
 	dnsPath := os.Getenv("ZTNA_DNS_RECORDS")
 	if dnsPath == "" {
 		dnsPath = "/data/dns_records.json"
 	}
 
-	// Config do SSH server lida das variáveis de ambiente.
+	// SSH server config read from the environment.
 	sshCfg := sshd.ConfigFromEnv()
 	if sshCfg.RSAKeyPath == "" && sshCfg.Ed25519KeyPath == "" {
 		sshCfg.RSAKeyPath = "/data/ssh_host_key"
@@ -81,10 +80,10 @@ func runDaemon() {
 	httpSrv := httpd.NewServer(":80")
 	sshSrv := sshd.NewServer(":2222", sshCfg)
 
-	// Wire-up do latency runner para a Admin API.
+	// Wire the latency runner into the Admin API.
 	admin.LatencyFn = runLatencyAPI
 
-	// Auto-start configurável por env. Default: liga tudo.
+	// Auto-start is configurable per service. Default: start everything.
 	if env("ZTNA_AUTOSTART_DNS", "true") == "true" {
 		if err := dnsSrv.Start(); err != nil {
 			logger.Log("SYS ", "DNS autostart failed: "+err.Error())
@@ -110,12 +109,13 @@ func runDaemon() {
 		os.Exit(1)
 	}
 
-	fmt.Println("✓ ZTNA Lab appliance pronto")
-	fmt.Println("  Plano de teste     :  http://0.0.0.0:80   ssh -p 2222   dns udp/53")
-	fmt.Printf("  Plano de admin     :  http://%s\n", adminAddr)
+	fmt.Println("✓ ZTNA Lab appliance ready")
+	fmt.Println("  Test plane         :  http://0.0.0.0:80   ssh -p 2222   dns udp/53")
+	fmt.Printf("  Admin plane        :  http://%s\n", adminAddr)
+	fmt.Printf("  Log file           :  %s\n", logger.Path())
 	fmt.Println("  CLI                :  docker exec -it <container> /ztna-lab cli")
 
-	// Aguarda sinal de shutdown.
+	// Wait for the shutdown signal.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 	<-sigCh
@@ -131,8 +131,8 @@ func runDaemon() {
 	logger.Log("SYS ", "ZTNA Lab appliance stopped")
 }
 
-// runLatencyAPI é o adapter da função runLatency (em main.go) para o formato
-// esperado pela Admin API.
+// runLatencyAPI adapts runLatency (in main.go) to the shape the Admin API
+// expects.
 func runLatencyAPI(url string, count int, interval time.Duration) (admin.LatencyResult, error) {
 	r, err := runLatency(url, count, interval)
 	if err != nil {
@@ -162,8 +162,8 @@ func env(k, def string) string {
 	return def
 }
 
-// isatty detecta se stdin é um terminal interativo. Implementação mínima
-// usando syscall — substitua por uma lib se preferir.
+// isatty reports whether stdin is an interactive terminal. Minimal
+// implementation — swap in a library if you prefer.
 func isatty(f *os.File) bool {
 	fi, err := f.Stat()
 	if err != nil {
