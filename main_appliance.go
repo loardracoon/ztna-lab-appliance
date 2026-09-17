@@ -41,8 +41,6 @@ func main() {
 		runDaemon()
 	case "cli":
 		runCLIClient()
-	case "fwopt":
-		runFwopt(os.Args[2:])
 	case "version":
 		fmt.Println("ztna-lab appliance 1.0")
 	case "":
@@ -56,7 +54,7 @@ func main() {
 		}
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", cmd)
-		fmt.Fprintln(os.Stderr, "usage: ztna-lab [daemon|cli|fwopt|version]")
+		fmt.Fprintln(os.Stderr, "usage: ztna-lab [daemon|cli|version]")
 		os.Exit(2)
 	}
 }
